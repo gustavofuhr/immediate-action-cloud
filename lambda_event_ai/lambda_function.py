@@ -24,8 +24,13 @@ def lambda_handler(event, context):
     topic = event["topic"]
     stream_name = topic.split("/")[1]
     start_timestamp = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
+
+    lambda_context = {
+        "lambda_function_invoked_arn": context.invoked_function_arn,
+        "lambda_function_version": context.function_version,
+    }
     
-    event_ai_processor.process_frames(stream_name, start_timestamp, one_in_frames_ratio = 5, n_seconds = 10)
+    event_ai_processor.process_frames(stream_name, start_timestamp, lambda_context, one_in_frames_ratio = 7, n_seconds = 10)
     event_ai_processor.stream.join(timeout=300)  # Wait for up to 5 minutes
 
     return {
@@ -34,11 +39,15 @@ def lambda_handler(event, context):
     }
 
 if __name__ == "__main__":
+    class MockLambdaContext:
+        function_version = "$LATEST"
+        invoked_function_arn = "arn:aws:lambda:eu-west-1:123456789012:function:mock_lambda"
+
     event = {
         "topic": "cameras/axis-local/events/motion/start",
-        "timestamp": "2025-04-19T00:20:21.303729Z",
+        "timestamp": "2025-05-12T20:31:55.115170Z",
         "profile": "Camera1ProfileANY",
         "active": True
     }
     
-    lambda_handler(event, None)
+    lambda_handler(event, MockLambdaContext())

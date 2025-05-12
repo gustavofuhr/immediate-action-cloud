@@ -146,6 +146,9 @@ class KvsFragementProcessor():
 
             frames: List<numpy.ndarray>
             A list of frames extracted from the fragment as numpy.ndarray
+
+            num_frames: int
+            The number of frames in the fragment.
         
         '''
 
@@ -157,7 +160,7 @@ class KvsFragementProcessor():
         for i in range(0, len(frames), one_in_frames_ratio):
             ret_frames.append(frames[i])
 
-        return ret_frames
+        return ret_frames, len(frames)
 
     def save_frames_as_jpeg(self, fragment_bytes, one_in_frames_ratio, jpg_file_base_path):
         '''

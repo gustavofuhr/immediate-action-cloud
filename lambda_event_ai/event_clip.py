@@ -25,7 +25,6 @@ class EventClip:
             new_width = int(width * (self.resize_clip_height / height))
             im_pil = im_pil.resize((new_width, self.resize_clip_height), Image.LANCZOS)
 
-        print("Adding frame to clip. Type: ", type(im_pil), "Size: ", im_pil.size)
         self.frames.append(np.array(im_pil))
 
     def send_clip_to_s3(self, file_path : str):
