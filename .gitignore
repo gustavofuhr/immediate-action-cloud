@@ -172,3 +172,6 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+.event_query_app/
+lambda_event_ai/.lambda_event_ai/
+dynamodb/.dynamodb/
