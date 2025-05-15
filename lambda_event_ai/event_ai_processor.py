@@ -118,7 +118,7 @@ class EventAIProcessor:
             frame_timestamp = self._compute_frame_timestamp(frag_producer_timestamp, n_frames_in_fragment, i, self.one_in_frames_ratio)
             # print("Frame timestamp: ", frame_timestamp)
             
-            filtered_detections, raw_detections = self.detector.run(image_pil, classes_to_detect=DETECTION_CLASS_COLORS.keys(), threshold=0.7, verbose=(self.n_frames == 0))
+            filtered_detections, raw_detections = self.detector.run(image_pil, classes_to_detect=DETECTION_CLASS_COLORS.keys(), threshold=0.5, verbose=(self.n_frames == 0))
             self._store_detections(self.stream_name, frame_timestamp, self.event_timestamp, frag_number, frag_producer_timestamp, frag_server_timestamp, raw_detections)
             
             if filtered_detections:
