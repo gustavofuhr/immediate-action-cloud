@@ -28,6 +28,8 @@ def lambda_handler(event, context):
     lambda_context = {
         "lambda_function_invoked_arn": context.invoked_function_arn,
         "lambda_function_version": context.function_version,
+        "lambda_aws_request_id": context.aws_request_id,
+        "lambda_log_stream_name": context.log_stream_name,
     }
     
     event_ai_processor.process_frames(stream_name, start_timestamp, lambda_context, one_in_frames_ratio = 7, n_seconds = 10)
@@ -42,12 +44,12 @@ if __name__ == "__main__":
     class MockLambdaContext:
         function_version = "$LATEST"
         invoked_function_arn = "arn:aws:lambda:eu-west-1:123456789012:function:mock_lambda"
+        aws_request_id = "2afc22dd-4c08-4e5b-8cb5-b002d9be13d5"
+        log_stream_name = "2025/05/15/[$LATEST]7baa3150e9d642eb9a8d7d97e920c2be"
 
     event = {
-        "topic": "cameras/axis-local/events/motion/start",
-        "timestamp": "2025-05-12T20:31:55.115170Z",
-        "profile": "Camera1ProfileANY",
-        "active": True
+        "topic": "cameras/axis-local/events/streaming/start",
+        "timestamp": "2025-05-12T20:31:55.115170Z"
     }
     
     lambda_handler(event, MockLambdaContext())
