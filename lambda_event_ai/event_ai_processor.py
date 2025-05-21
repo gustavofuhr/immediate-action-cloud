@@ -88,6 +88,7 @@ class EventAIProcessor:
         self.n_fragments = 0
         self.n_frames = 0
         self.seen_classes = set()
+        self.detection_stats = {}
         self.stream.start()
 
     
@@ -119,11 +120,24 @@ class EventAIProcessor:
             # print("Frame timestamp: ", frame_timestamp)
             
             filtered_detections, raw_detections = self.detector.run(image_pil, classes_to_detect=DETECTION_CLASS_COLORS.keys(), threshold=0.5, verbose=(self.n_frames == 0))
-            self._store_detections(self.stream_name, frame_timestamp, self.event_timestamp, frag_number, frag_producer_timestamp, frag_server_timestamp, raw_detections)
-            
+            self._store_detections(self.stream_name, frame_timestamp, self.event_timestamp, frag_number, frag_producer_timestamp, frag_server_timestamp, raw_detections)            
+
+            for det in filtered_detections:
+                cls = det['label']
+                score = det['score']
+                if cls not in self.detection_stats:
+                    self.detection_stats[cls] = {
+                        "total_confidence": 0.0,
+                        "max_confidence": 0.0,
+                        "n_frames": 0
+                    }
+                self.detection_stats[cls]["total_confidence"] += score
+                self.detection_stats[cls]["max_confidence"] = max(self.detection_stats[cls]["max_confidence"], score)
+                self.detection_stats[cls]["n_frames"] += 1
+
+
             if filtered_detections:
                 image_pil = self._draw_detections_on_frame(image_pil, filtered_detections)
-
             self.event_clip.add_frame(image_pil)
             self.n_frames += 1
 
@@ -155,6 +169,29 @@ class EventAIProcessor:
         else:
             print('Writing event clip to S3')
             self.event_clip.send_clip_to_s3(self.event_clip_filepath)
+
+            # Finalize detection_stats (compute average)
+            final_detection_stats = {}
+            for cls, stats in self.detection_stats.items():
+                final_detection_stats[cls] = {
+                    "avg_confidence": round(stats["total_confidence"] / stats["n_frames"], 4),
+                    "max_confidence": round(stats["max_confidence"], 4),
+                    "n_frames": stats["n_frames"]
+                }
+
+            print("Event summary:")
+            print(f"  Stream name: {self.stream_name}")
+            print(f"  Event timestamp: {self.event_timestamp.isoformat()}")
+            print(f"  Stream start timestamp: {self.stream_start_timestamp.isoformat()}")
+            print(f"  Stream end timestamp: {self.stream_end_timestamp.isoformat()}")
+            print(f"  Number of processed fragments: {self.n_fragments}")
+            print(f"  Number of processed frames: {self.n_frames}")
+            print(f"  Video S3 key: {self.event_clip_filepath}")
+            print(f"  Seen classes: {list(self.seen_classes)}")
+            print(f"  Detection stats:")
+            for cls, stats in final_detection_stats.items():
+                print(f"    - {cls}: avg_conf={stats['avg_confidence']}, max_conf={stats['max_confidence']}, n_frames={stats['n_frames']}")
+
             self._update_event_record(
                 stream_name=self.stream_name,
                 event_timestamp=self.event_timestamp,
@@ -163,7 +200,8 @@ class EventAIProcessor:
                 n_processed_fragments=self.n_fragments,
                 n_processed_frames=self.n_frames,
                 video_key=self.event_clip_filepath,
-                seen_classes=list(self.seen_classes)
+                seen_classes=list(self.seen_classes),
+                detection_stats=final_detection_stats
             )
 
     def on_stream_read_exception(self, stream_name, error):
@@ -218,7 +256,8 @@ class EventAIProcessor:
                              n_processed_fragments, 
                              n_processed_frames, 
                              video_key, 
-                             seen_classes):
+                             seen_classes,
+                             detection_stats):
         """ Update the event record in the events table """
         self.event_table.update_item(
             Key={
@@ -231,7 +270,8 @@ class EventAIProcessor:
                             "n_processed_fragments = :n_processed_fragments, "
                             "n_processed_frames = :n_processed_frames, "
                             "video_key = :video_key, "
-                            "seen_classes = :seen_classes",
+                            "seen_classes = :seen_classes, "
+                            "detection_stats = :detection_stats",
             ExpressionAttributeValues={
                 ":processing_end_timestamp": datetime.now(timezone.utc).isoformat(),
                 ":stream_start_timestamp": stream_start_timestamp.isoformat(),
@@ -239,9 +279,20 @@ class EventAIProcessor:
                 ":n_processed_fragments": n_processed_fragments,
                 ":n_processed_frames": n_processed_frames,
                 ":video_key": video_key,
-                ":seen_classes": seen_classes
+                ":seen_classes": seen_classes,
+                ":detection_stats": self._convert_floats_to_decimals(detection_stats),
             }
         )
+
+    def _convert_floats_to_decimals(self, obj):
+            if isinstance(obj, float):
+                return Decimal(str(obj))  # str() preserves precision
+            elif isinstance(obj, list):
+                return [self._convert_floats_to_decimals(i) for i in obj]
+            elif isinstance(obj, dict):
+                return {k: self._convert_floats_to_decimals(v) for k, v in obj.items()}
+            else:
+                return obj
 
     
     def _store_detections(self, 
@@ -252,15 +303,7 @@ class EventAIProcessor:
                           fragment_producer_timestamp: datetime,
                           fragment_server_timestamp: datetime, 
                           detections: list):
-        def convert_floats_to_decimals(obj):
-            if isinstance(obj, float):
-                return Decimal(str(obj))  # str() preserves precision
-            elif isinstance(obj, list):
-                return [convert_floats_to_decimals(i) for i in obj]
-            elif isinstance(obj, dict):
-                return {k: convert_floats_to_decimals(v) for k, v in obj.items()}
-            else:
-                return obj
+
 
         CLASSES_TO_STORE = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
                     'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat',
@@ -274,7 +317,7 @@ class EventAIProcessor:
             "fragment_number": fragment_number,
             "fragment_producer_timestamp": fragment_producer_timestamp.isoformat(),
             "fragment_server_timestamp": fragment_server_timestamp.isoformat(),
-            "detections": convert_floats_to_decimals(detections_to_store),
+            "detections": self._convert_floats_to_decimals(detections_to_store),
         }
         self.seen_classes.update([det['label'] for det in detections_to_store])
         try:

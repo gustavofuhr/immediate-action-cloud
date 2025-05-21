@@ -1,7 +1,11 @@
 import boto3
 from boto3.dynamodb.conditions import Key, Attr
 from datetime import datetime
+from cachetools import TTLCache, cached
+import json
 
+# Global cache: max 1 item (we're only caching this one call), TTL = 3600 seconds (1 hour)
+device_id_cache = TTLCache(maxsize=1, ttl=3600)
 
 class EventQuery:
     def __init__(self, region_name="eu-west-1", table_name="events"):
@@ -36,6 +40,30 @@ class EventQuery:
 
         return all_items
 
+    def _filter_items_by_detection_stats(
+        self,
+        items: list,
+        target_classes: list[str],
+        threshold: float = 0.5,
+        condition: str = "OR"
+    ):
+        filtered_items = []
+
+        for item in items:
+            detection_stats = item.get("detection_stats", {})
+            passed_classes = [
+                cls for cls in target_classes
+                if cls in detection_stats and detection_stats[cls].get("max_confidence", 0) >= threshold
+            ]
+
+            if condition == "OR" and passed_classes:
+                filtered_items.append(item)
+            elif condition == "AND" and all(cls in passed_classes for cls in target_classes):
+                filtered_items.append(item)
+
+        return filtered_items
+
+
     def _filter_items_by_classes(self, items: list, target_classes: list[str], condition: str = "OR"):
         filtered_items = []
         for item in items:
@@ -64,6 +92,7 @@ class EventQuery:
         start_date: datetime,
         end_date: datetime,
         target_classes: list[str],
+        threshold: float = 0.5,
         condition: str = "OR",
         device_ids: list[str] = [],
     ) -> list[dict]:
@@ -71,7 +100,7 @@ class EventQuery:
             raise ValueError("device_ids must be a non-empty list.")
 
         items = self._fetch_dynamo_items(device_ids, start_date, end_date)
-        filtered_items = self._filter_items_by_classes(items, target_classes, condition)
+        filtered_items = self._filter_items_by_detection_stats(items, target_classes, threshold, condition)
 
         results = []
         for item in filtered_items:
@@ -79,6 +108,7 @@ class EventQuery:
                 "timestamp": item.get("event_timestamp"),
                 "device_id": item.get("device_id"),
                 "seen_classes": item.get("seen_classes", []),
+                "detection_stats": item.get("detection_stats", {}),
                 "video_url": None
             }
             if "video_key" in item:
@@ -92,25 +122,29 @@ class EventQuery:
         return results
 
 
-
+    @cached(cache=device_id_cache)
     def get_all_device_ids(self) -> list[str]:
-        device_ids = set()
-        last_key = None
+        # read from json
+        with open("cameras.json", "r") as f:
+            data = json.load(f)
+            return sorted(data["cameras"])
+        # device_ids = set()
+        # last_key = None
 
-        while True:
-            kwargs = {
-                "ProjectionExpression": "device_id"
-            }
-            if last_key:
-                kwargs["ExclusiveStartKey"] = last_key
+        # while True:
+        #     kwargs = {
+        #         "ProjectionExpression": "device_id"
+        #     }
+        #     if last_key:
+        #         kwargs["ExclusiveStartKey"] = last_key
 
-            response = self.table.scan(**kwargs)
-            for item in response.get("Items", []):
-                if "device_id" in item:
-                    device_ids.add(item["device_id"])
+        #     response = self.table.scan(**kwargs)
+        #     for item in response.get("Items", []):
+        #         if "device_id" in item:
+        #             device_ids.add(item["device_id"])
 
-            last_key = response.get("LastEvaluatedKey")
-            if not last_key:
-                break
-
-        return sorted(device_ids)
+        #     last_key = response.get("LastEvaluatedKey")
+        #     if not last_key:
+        #         break
+        # print( sorted(device_ids))
+        # return sorted(device_ids)
