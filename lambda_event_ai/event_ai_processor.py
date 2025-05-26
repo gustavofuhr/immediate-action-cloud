@@ -24,6 +24,12 @@ DETECTION_CLASS_COLORS = {
 }
 
 
+class StreamNotReadyError(Exception):
+    """ Exception raised when the KVS stream is not ready """
+    def __init__(self, message="KVS stream is not ready yet. Please try again later."):
+        self.message = message
+        super().__init__(self.message)
+
 class EventAIProcessor:
 
     def __init__(self, aws_region, s3_bucket = "motion-event-snapshots"):
@@ -40,17 +46,21 @@ class EventAIProcessor:
         self.event_table = self.dynamodb.Table("events")
         self.event_detections_table = self.dynamodb.Table("event_detections")
         self.last_fragment_timestamp = None
+        self.stream_exception = None
 
     def process_frames(self, stream_name : str, 
                        event_timestamp : datetime,
-                       lambda_context : dict, 
+                       lambda_context : dict,
+                       attempt_number : int = 0,
                        n_seconds : int = 10, 
-                       one_in_frames_ratio : int = 10,
-                       try_again = True):
+                       one_in_frames_ratio : int = 10):
+        
+        self.stream_exception = None
+        self.attempt_number = attempt_number
         self.stream_name = stream_name
         self.event_timestamp = event_timestamp
         self.n_seconds = n_seconds
-        self.try_again = try_again
+        self.event_clip.clear_frames()
         self.event_clip_filepath = f"{stream_name}/{event_timestamp.isoformat()}.mp4"
         self.lambda_context = lambda_context
         
@@ -64,14 +74,15 @@ class EventAIProcessor:
         self._create_event_record(
             stream_name,
             self.event_timestamp,
-            self.lambda_context
+            self.lambda_context,
+            self.attempt_number
         )
         
-
         # TODO: if the KVS stream is still not there, it should be a good idea to wait a bit. Is my retry working?
         # TODO: If I read the fragments too fast, will I end up reaching on_stream_read_complete before I get all the frames?
-        time.sleep(5)  # Wait for the stream to be available TODO: improve that
+        # time.sleep(5)  # Wait for the stream to be available TODO: improve that
         self.stream_start_timestamp = event_timestamp # TODO: might use the buffer before the event timestamp
+        
         get_media_response = kvs_media_client.get_media(
             StreamName=stream_name,
             StartSelector={
@@ -95,7 +106,6 @@ class EventAIProcessor:
     def on_fragment_arrived(self, stream_name, fragment_bytes, fragment_dom, fragment_receive_duration):
         """ Called when a new KVS fragment arrives """
 
-        
         frag_tags = self.kvs_fragment_processor.get_fragment_tags(fragment_dom)
         frag_number = frag_tags["AWS_KINESISVIDEO_FRAGMENT_NUMBER"]
         frag_producer_timestamp = datetime.fromtimestamp(float(frag_tags["AWS_KINESISVIDEO_PRODUCER_TIMESTAMP"]), tz=timezone.utc)
@@ -159,16 +169,19 @@ class EventAIProcessor:
 
 
 
-    def on_stream_read_complete(self, stream_name):
-        print(f'Read Media on stream: {stream_name} Completed')
-        if self.event_clip.frames == [] and self.try_again:
-            print("Unable to read frames, will try again")
-            time.sleep(30) # Wait for the stream to be available TODO: improve that
-            self.process_frames(self.stream_name, self.stream_start_timestamp, self.lambda_context, self.n_seconds, self.one_in_frames_ratio, try_again=False)
-        
+    def on_stream_read_complete(self, stream):
+        print(f'Read Media on stream: {stream} Completed')
+        if self.event_clip.frames == []:
+            self.stream_exception = StreamNotReadyError("No frames were processed. The stream might not be ready yet.")
+            print(self.stream_exception.message)
+            self.stream.stop_thread()
         else:
+            
             print('Writing event clip to S3')
+            start_time = time.time()
             self.event_clip.send_clip_to_s3(self.event_clip_filepath)
+            elapsed_ms = (time.time() - start_time) * 1000
+            print(f"send_clip_to_s3 took {elapsed_ms:.2f} ms")
 
             # Finalize detection_stats (compute average)
             final_detection_stats = {}
@@ -182,6 +195,7 @@ class EventAIProcessor:
             print("Event summary:")
             print(f"  Stream name: {self.stream_name}")
             print(f"  Event timestamp: {self.event_timestamp.isoformat()}")
+            print(f"  Attempt number: {self.attempt_number}")
             print(f"  Stream start timestamp: {self.stream_start_timestamp.isoformat()}")
             print(f"  Stream end timestamp: {self.stream_end_timestamp.isoformat()}")
             print(f"  Number of processed fragments: {self.n_fragments}")
@@ -205,8 +219,14 @@ class EventAIProcessor:
             )
 
     def on_stream_read_exception(self, stream_name, error):
-        print(f'Error on stream: {stream_name} - {error}')
-        raise error
+        print(f'Error on stream: {stream_name}')
+        print(repr(error))
+        # if error is `pyav` can not handle the given uri assumes stream is not ready yet and tries again later
+        if isinstance(error, OSError) and str(error) == '`pyav` can not handle the given uri.':
+            self.stream_exception = StreamNotReadyError("KVS stream is not ready: PyAV cannot handle URI")
+        else:
+            self.stream_exception = error
+        self.stream.stop_thread()
 
     def _get_data_endpoint(self, stream_name, api_name):
         """ Fetch KVS data endpoint """
@@ -234,19 +254,21 @@ class EventAIProcessor:
 
         return frame_pil
     
-    def _create_event_record(self, stream_name, event_timestamp, lambda_context):
+    def _create_event_record(self, stream_name, event_timestamp, lambda_context, attempt_number):
         """ Create a record in the events table """
+        start = time.time()
         self.event_table.put_item(
             Item={
                 "device_id": stream_name,
                 "event_timestamp": event_timestamp.isoformat(),
                 "processing_start_timestamp": datetime.now(timezone.utc).isoformat(),
                 **lambda_context,
+                "process_attempt": attempt_number,
             }
         )
-
+        elapsed_ms = (time.time() - start) * 1000
         # this record should be updated at the end of the processing
-        print(f"Created event record for {stream_name} at {event_timestamp}")
+        print(f"Created event record for {stream_name} at {event_timestamp}. Took {elapsed_ms:.2f} ms")
 
     def _update_event_record(self, 
                              stream_name, 
@@ -259,30 +281,33 @@ class EventAIProcessor:
                              seen_classes,
                              detection_stats):
         """ Update the event record in the events table """
+        start_time = time.time()
         self.event_table.update_item(
             Key={
-                "device_id": stream_name,
-                "event_timestamp": event_timestamp.isoformat(),
+            "device_id": stream_name,
+            "event_timestamp": event_timestamp.isoformat(),
             },
             UpdateExpression="SET processing_end_timestamp = :processing_end_timestamp, "
-                            "stream_start_timestamp = :stream_start_timestamp, "
-                            "stream_end_timestamp = :stream_end_timestamp, "
-                            "n_processed_fragments = :n_processed_fragments, "
-                            "n_processed_frames = :n_processed_frames, "
-                            "video_key = :video_key, "
-                            "seen_classes = :seen_classes, "
-                            "detection_stats = :detection_stats",
+                    "stream_start_timestamp = :stream_start_timestamp, "
+                    "stream_end_timestamp = :stream_end_timestamp, "
+                    "n_processed_fragments = :n_processed_fragments, "
+                    "n_processed_frames = :n_processed_frames, "
+                    "video_key = :video_key, "
+                    "seen_classes = :seen_classes, "
+                    "detection_stats = :detection_stats",
             ExpressionAttributeValues={
-                ":processing_end_timestamp": datetime.now(timezone.utc).isoformat(),
-                ":stream_start_timestamp": stream_start_timestamp.isoformat(),
-                ":stream_end_timestamp": stream_end_timestamp.isoformat(),
-                ":n_processed_fragments": n_processed_fragments,
-                ":n_processed_frames": n_processed_frames,
-                ":video_key": video_key,
-                ":seen_classes": seen_classes,
-                ":detection_stats": self._convert_floats_to_decimals(detection_stats),
+            ":processing_end_timestamp": datetime.now(timezone.utc).isoformat(),
+            ":stream_start_timestamp": stream_start_timestamp.isoformat(),
+            ":stream_end_timestamp": stream_end_timestamp.isoformat(),
+            ":n_processed_fragments": n_processed_fragments,
+            ":n_processed_frames": n_processed_frames,
+            ":video_key": video_key,
+            ":seen_classes": seen_classes,
+            ":detection_stats": self._convert_floats_to_decimals(detection_stats),
             }
         )
+        elapsed_ms = (time.time() - start_time) * 1000
+        print(f"event_table.update_item took {elapsed_ms:.2f} ms")
 
     def _convert_floats_to_decimals(self, obj):
             if isinstance(obj, float):

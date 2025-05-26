@@ -18,7 +18,7 @@ class EventClip:
         self.bucket_name = bucket_name
         self.s3_client = boto3.client('s3', region_name=aws_region)
         self.resize_clip_height = resize_clip_height
-
+    
     def add_frame(self, im_pil : Image.Image):
         if self.resize_clip_height is not None:
             width, height = im_pil.size
@@ -26,6 +26,9 @@ class EventClip:
             im_pil = im_pil.resize((new_width, self.resize_clip_height), Image.LANCZOS)
 
         self.frames.append(np.array(im_pil))
+
+    def clear_frames(self):
+        self.frames = []
 
     def send_clip_to_s3(self, file_path : str):
         if len(self.frames) == 0:

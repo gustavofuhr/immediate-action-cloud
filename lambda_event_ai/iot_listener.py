@@ -13,12 +13,18 @@ from lambda_function import lambda_handler
 AWS_IOT_ENDPOINT = "arpj530io2lue-ats.iot.eu-west-1.amazonaws.com"
 AWS_IOT_PORT = 8883
 CLIENT_ID = "test_thing"
-TOPIC = "cameras/axis-local/events/motion/start"
+TOPIC = "cameras/B8A44FA0DC7A__axis-local/events/streaming/start"
 
 # using certs from test_thing
-ROOT_CA_PATH="/home/gfuhr/projects/immediate-action-camera/AmazonRootCA1.pem"
-CERTIFICATE_PATH="/home/gfuhr/projects/immediate-action-camera/ia-tiny-cam-manager/credentials/test_thing/certificate.pem"
-PRIVATE_KEY_PATH="/home/gfuhr/projects/immediate-action-camera/ia-tiny-cam-manager/credentials/test_thing/private.key"
+ROOT_CA_PATH="/home/gfuhr/projects/immediate-action-acap/AmazonRootCA1.pem"
+CERTIFICATE_PATH="/home/gfuhr/projects/immediate-action-prototypes/ia-tiny-cam-manager/credentials/test_thing/certificate.pem"
+PRIVATE_KEY_PATH="/home/gfuhr/projects/immediate-action-prototypes/ia-tiny-cam-manager/credentials/test_thing/private.key"
+
+class MockLambdaContext:
+    function_version = "$LATEST"
+    invoked_function_arn = "LOCAL_TEST_IOT_LISTENER"
+    aws_request_id = "LOCAL_TEST"
+    log_stream_name = "LOCAL_TEST"
 
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
@@ -34,7 +40,7 @@ def on_message(client, userdata, msg):
         payload = json.loads(msg.payload.decode('utf-8'))
         payload['topic'] = msg.topic  # Attach topic to the payload (needed for your lambda_handler)
         print(f"Payload: {json.dumps(payload, indent=4)}")
-        threading.Thread(target=lambda_handler, args=(payload, None)).start()
+        threading.Thread(target=lambda_handler, args=(payload, MockLambdaContext())).start()
     except Exception as e:
         print(f"Error processing message: {e}")
 
