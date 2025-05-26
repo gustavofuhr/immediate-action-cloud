@@ -1,0 +1,5 @@
+numpy==1.26.4
+boto3==1.38.22
+imageio==2.37.0
+pillow==11.2.1
+colorama==0.4.6
