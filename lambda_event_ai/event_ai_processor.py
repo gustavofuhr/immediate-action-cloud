@@ -15,13 +15,23 @@ from event_clip import EventClip
 DETECTION_CLASS_COLORS = {
     'person': (255, 0, 0),  
     'car': (0, 255, 0),  
+    'bicycle': (0, 255, 0),
     'motorcycle': (0, 255, 0),  
     'bus': (0, 255, 0),  
     'train': (0, 255, 0),  
     'truck': (0, 255, 0),  
     'bird': (0, 0, 255),  
-    'dog': (0, 0, 255)  
+    'dog': (0, 0, 255),
+    'sheep': (0, 0, 255),
+    'cow': (0, 0, 255),
+    'cat': (0, 0, 255),
+    'horse': (0, 0, 255)
 }
+
+CLASSES_TO_STORE = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
+                    'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat',
+                    'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe']
+    
 
 
 class StreamNotReadyError(Exception):
@@ -330,10 +340,6 @@ class EventAIProcessor:
                           detections: list):
 
 
-        CLASSES_TO_STORE = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
-                    'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat',
-                    'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe']
-    
         detections_to_store = [det for det in detections if det['label'] in CLASSES_TO_STORE and det['score'] >= 0.5]
         item = {
             "device_id": device_id,

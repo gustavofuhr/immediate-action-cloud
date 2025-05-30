@@ -98,6 +98,13 @@ class EventQuery:
     ) -> list[dict]:
         if not device_ids:
             raise ValueError("device_ids must be a non-empty list.")
+        
+        if "animals" in target_classes:
+            target_classes.extend(['dog', 'sheep', 'cow', 'bird', 'horse', 'elephant', 'bear', 'zebra', 'giraffe'])
+            target_classes.remove('animals')
+        if "vehicles" in target_classes:
+            target_classes.extend(['car', 'motorcycle', 'bus', 'bicycle', 'train', 'truck', 'boat', 'airplane'])
+            target_classes.remove('vehicles')
 
         items = self._fetch_dynamo_items(device_ids, start_date, end_date)
         filtered_items = self._filter_items_by_detection_stats(items, target_classes, threshold, condition)

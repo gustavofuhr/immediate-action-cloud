@@ -7,6 +7,13 @@ event_query = EventQuery(region_name="eu-west-1", table_name="events")
 st.set_page_config(page_title="Event Filter", layout="wide")
 st.title("🎥 Event Record Filter")
 
+# 
+# CLASSES_TO_STORE = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
+#                     'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat',
+#                     'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe']
+
+
+
 col1, col2, col3, col4 = st.columns(4)
 with col1:
     start_date = st.date_input("Start date", value=date.today())
@@ -15,14 +22,23 @@ with col2:
 with col3:
     class_filter = st.multiselect(
         "Select classes (optional):",
-        options=['person', 'car', 'motorcycle', 'bus', 'train', 'truck', 'bird', 'dog'],
+        options=['person', 'animals', 'dog', 'sheep', 'cow', 'bird', 'vehicles', 'car', 'bicycle', 'motorcycle', 'train', 'truck'], 
         default=["person"]
     )
 with col4:
-    logic_operator = st.radio(
-        "Match condition", options=["OR", "AND"], index=0,
-        disabled=len(class_filter) <= 1, horizontal=True
-    )
+    force_or = "animals" in class_filter or "vehicles" in class_filter
+    if force_or:
+        st.radio(
+            "Match condition", options=["OR"], index=0,
+            disabled=True, horizontal=True, key="forced_or"
+        )
+        logic_operator = "OR"
+    else:
+        logic_operator = st.radio(
+            "Match condition", options=["OR", "AND"], index=0,
+            disabled=len(class_filter) <= 1, horizontal=True, key="user_logic"
+        )
+    
 
 device_ids = event_query.get_all_device_ids()
 col_device, col_threshold = st.columns([2, 1])
