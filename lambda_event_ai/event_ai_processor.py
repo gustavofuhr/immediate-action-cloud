@@ -9,23 +9,25 @@ from amazon_kinesis_video_consumer_library.kinesis_video_streams_parser import K
 from amazon_kinesis_video_consumer_library.kinesis_video_fragment_processor import KvsFragementProcessor
 # from dfine_controller_ort import DFINEControllerORT
 from sagemaker_controller import SageMakerController
-from event_clip import EventClip
+from event_clip import EventClip, draw_boxes_on_frame
 
 
 DETECTION_CLASS_COLORS = {
-    'person': (255, 0, 0),  
-    'car': (0, 255, 0),  
-    'bicycle': (0, 255, 0),
-    'motorcycle': (0, 255, 0),  
-    'bus': (0, 255, 0),  
-    'train': (0, 255, 0),  
-    'truck': (0, 255, 0),  
-    'bird': (0, 0, 255),  
-    'dog': (0, 0, 255),
-    'sheep': (0, 0, 255),
-    'cow': (0, 0, 255),
-    'cat': (0, 0, 255),
-    'horse': (0, 0, 255)
+    'person': (204, 0, 0),  
+    'car': (0, 153, 0),  
+    'bicycle': (0, 153, 0),
+    'motorcycle': (0, 153, 0),  
+    'bus': (0, 153, 0),  
+    'train': (0, 153, 0),  
+    'truck': (0, 153, 0),  
+    'bird': (0, 51, 204),  
+    'dog': (0, 51, 204),
+    'sheep': (0, 51, 204),
+    'cow': (0, 51, 204),
+    'cat': (0, 51, 204),
+    'horse': (0, 51, 204),
+    'plate': (230, 138, 0)
+
 }
 
 CLASSES_TO_STORE = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
@@ -48,13 +50,14 @@ class EventAIProcessor:
         self.session = boto3.Session(region_name=aws_region) # TODO: do I need aws_region?
         self.kvs_client = self.session.client("kinesisvideo")        
         
-        self.detector = SageMakerController(aws_region, "dfine-x-obj2coco-endpoint")
+        self.detector = SageMakerController(aws_region, "sagemaker-inference-server-endpoint")
 
         self.event_clip = EventClip(aws_region, s3_bucket, resize_clip_height=720)
 
         self.dynamodb = boto3.resource("dynamodb", region_name=aws_region)
         self.event_table = self.dynamodb.Table("events")
         self.event_detections_table = self.dynamodb.Table("event_detections")
+        self.event_plate_recognitions_table = self.dynamodb.Table("event_plate_recognitions")
         self.last_fragment_timestamp = None
         self.stream_exception = None
 
@@ -110,6 +113,8 @@ class EventAIProcessor:
         self.n_frames = 0
         self.seen_classes = set()
         self.detection_stats = {}
+        self.seen_plates = set()
+        self.plate_recognition_stats = {}
         self.stream.start()
 
     
@@ -139,9 +144,11 @@ class EventAIProcessor:
             frame_timestamp = self._compute_frame_timestamp(frag_producer_timestamp, n_frames_in_fragment, i, self.one_in_frames_ratio)
             # print("Frame timestamp: ", frame_timestamp)
             
-            filtered_detections, raw_detections = self.detector.run(image_pil, classes_to_detect=DETECTION_CLASS_COLORS.keys(), threshold=0.5, verbose=(self.n_frames == 0))
+            filtered_detections, raw_detections = self.detector.detect_objects(image_pil, classes_to_detect=DETECTION_CLASS_COLORS.keys(), threshold=0.5, verbose=(self.n_frames == 0))
             self._store_detections(self.stream_name, frame_timestamp, self.event_timestamp, frag_number, frag_producer_timestamp, frag_server_timestamp, raw_detections)            
-
+            if filtered_detections:
+                image_pil = self._draw_detections_on_frame(image_pil, filtered_detections)
+            
             for det in filtered_detections:
                 cls = det['label']
                 score = det['score']
@@ -155,9 +162,24 @@ class EventAIProcessor:
                 self.detection_stats[cls]["max_confidence"] = max(self.detection_stats[cls]["max_confidence"], score)
                 self.detection_stats[cls]["n_frames"] += 1
 
+            filtered_plates, raw_plates = self.detector.detect_plates(image_pil, threshold=0.5, verbose=(self.n_frames == 0))
+            for plate in filtered_plates:
+                plate_text = plate['ocr_text']
+                if plate_text not in self.seen_plates:
+                    self.seen_plates.add(plate_text)
+                    if plate_text not in self.plate_recognition_stats:
+                        self.plate_recognition_stats[plate_text] = {
+                            "total_confidence": 0.0,
+                            "max_confidence": 0.0,
+                            "n_frames": 0
+                        }
+                self.plate_recognition_stats[plate_text]["total_confidence"] += plate['score']
+                self.plate_recognition_stats[plate_text]["max_confidence"] = max(self.plate_recognition_stats[plate_text]["max_confidence"], plate['score'])
+                self.plate_recognition_stats[plate_text]["n_frames"] += 1
+            if filtered_plates:
+                self._store_plates(self.stream_name, frame_timestamp, self.event_timestamp, frag_number, frag_producer_timestamp, frag_server_timestamp, raw_plates)
+                image_pil = self._draw_plates_on_frame(image_pil, filtered_plates)
 
-            if filtered_detections:
-                image_pil = self._draw_detections_on_frame(image_pil, filtered_detections)
             self.event_clip.add_frame(image_pil)
             self.n_frames += 1
 
@@ -201,6 +223,13 @@ class EventAIProcessor:
                     "max_confidence": round(stats["max_confidence"], 4),
                     "n_frames": stats["n_frames"]
                 }
+            final_plate_stats = {}
+            for plate, stats in self.plate_recognition_stats.items():
+                final_plate_stats[plate] = {
+                    "avg_confidence": round(stats["total_confidence"] / stats["n_frames"], 4),
+                    "max_confidence": round(stats["max_confidence"], 4),
+                    "n_frames": stats["n_frames"]
+                }
 
             print("Event summary:")
             print(f"  Stream name: {self.stream_name}")
@@ -212,9 +241,13 @@ class EventAIProcessor:
             print(f"  Number of processed frames: {self.n_frames}")
             print(f"  Video S3 key: {self.event_clip_filepath}")
             print(f"  Seen classes: {list(self.seen_classes)}")
+            print(f"  Seen plates: {list(self.seen_plates)}")
             print(f"  Detection stats:")
             for cls, stats in final_detection_stats.items():
                 print(f"    - {cls}: avg_conf={stats['avg_confidence']}, max_conf={stats['max_confidence']}, n_frames={stats['n_frames']}")
+            print(f"  Plate detection stats:")
+            for plate, stats in final_plate_stats.items():
+                print(f"    - {plate}: avg_conf={stats['avg_confidence']}, max_conf={stats['max_confidence']}, n_frames={stats['n_frames']}")
 
             self._update_event_record(
                 stream_name=self.stream_name,
@@ -225,7 +258,9 @@ class EventAIProcessor:
                 n_processed_frames=self.n_frames,
                 video_key=self.event_clip_filepath,
                 seen_classes=list(self.seen_classes),
-                detection_stats=final_detection_stats
+                seen_plates=list(self.seen_plates),
+                detection_stats=final_detection_stats,
+                plate_recognition_stats=final_plate_stats
             )
 
     def on_stream_read_exception(self, stream_name, error):
@@ -243,26 +278,23 @@ class EventAIProcessor:
         response = self.kvs_client.get_data_endpoint(StreamName=stream_name, APIName=api_name)
         return response['DataEndpoint']
     
-    
     def _draw_detections_on_frame(self, frame_pil, detections):
-        draw = ImageDraw.Draw(frame_pil)
-        try:
-            font = ImageFont.truetype("arial.ttf", 14)
-        except:
-            font = ImageFont.load_default()
+        return draw_boxes_on_frame(
+            frame_pil,
+            detections,
+            label_fn=lambda d: f"{d['label']}: {d['score']:.2f}",
+            color_fn=lambda d: DETECTION_CLASS_COLORS[d['label']],
+            font_size=20
+        )
 
-        for det in detections:
-            x1 = int(det['bbox']['top_left']['x'])
-            y1 = int(det['bbox']['top_left']['y'])
-            x2 = int(det['bbox']['bottom_right']['x'])
-            y2 = int(det['bbox']['bottom_right']['y'])
-            score = det['score']
-            obj_class = det['label']
-
-            draw.rectangle([x1, y1, x2, y2], outline=DETECTION_CLASS_COLORS[obj_class], width=2)
-            draw.text((x1, y1 - 10), f"{obj_class}: {score:.2f}", fill=DETECTION_CLASS_COLORS[obj_class], font=font)
-
-        return frame_pil
+    def _draw_plates_on_frame(self, frame_pil, plates):
+        return draw_boxes_on_frame(
+            frame_pil,
+            plates,
+            label_fn=lambda d: f"{d['ocr_text']} | {d['score']:.1f} | OCR: {d['ocr_confidence']:.1f}",
+            color_fn=lambda d: DETECTION_CLASS_COLORS["plate"],
+            font_size=20,
+        )
     
     def _create_event_record(self, stream_name, event_timestamp, lambda_context, attempt_number):
         """ Create a record in the events table """
@@ -289,7 +321,9 @@ class EventAIProcessor:
                              n_processed_frames, 
                              video_key, 
                              seen_classes,
-                             detection_stats):
+                             seen_plates,
+                             detection_stats,
+                             plate_recognition_stats):
         """ Update the event record in the events table """
         start_time = time.time()
         self.event_table.update_item(
@@ -304,7 +338,9 @@ class EventAIProcessor:
                     "n_processed_frames = :n_processed_frames, "
                     "video_key = :video_key, "
                     "seen_classes = :seen_classes, "
-                    "detection_stats = :detection_stats",
+                    "seen_plates = :seen_plates, "
+                    "detection_stats = :detection_stats, "
+                    "plate_recognition_stats = :plate_recognition_stats",
             ExpressionAttributeValues={
             ":processing_end_timestamp": datetime.now(timezone.utc).isoformat(),
             ":stream_start_timestamp": stream_start_timestamp.isoformat(),
@@ -313,7 +349,9 @@ class EventAIProcessor:
             ":n_processed_frames": n_processed_frames,
             ":video_key": video_key,
             ":seen_classes": seen_classes,
+            ":seen_plates": list(seen_plates),
             ":detection_stats": self._convert_floats_to_decimals(detection_stats),
+            ":plate_recognition_stats": self._convert_floats_to_decimals(plate_recognition_stats)
             }
         )
         elapsed_ms = (time.time() - start_time) * 1000
@@ -356,3 +394,29 @@ class EventAIProcessor:
             # print(f"Stored detection results for {device_id} at {frame_timestamp}")
         except Exception as e:
             print(f"Error storing detections in DynamoDB: {e}")
+
+
+        
+    def _store_plates(self, 
+                          device_id: str, 
+                          frame_timestamp: datetime, 
+                          event_timestamp: datetime,
+                          fragment_number: int,
+                          fragment_producer_timestamp: datetime,
+                          fragment_server_timestamp: datetime, 
+                          plates: list):
+
+
+        item = {
+            "device_id": device_id,
+            "frame_timestamp": frame_timestamp.isoformat(),
+            "event_timestamp": event_timestamp.isoformat(),
+            "fragment_number": fragment_number,
+            "fragment_producer_timestamp": fragment_producer_timestamp.isoformat(),
+            "fragment_server_timestamp": fragment_server_timestamp.isoformat(),
+            "plates": self._convert_floats_to_decimals(plates),
+        }
+        try:
+            self.event_plate_recognitions_table.put_item(Item=item)
+        except Exception as e:
+            print(f"Error storing plates in DynamoDB: {e}")

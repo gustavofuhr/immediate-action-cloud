@@ -28,7 +28,7 @@ class SageMakerController:
         self.sagemaker_runtime = boto3.client('sagemaker-runtime', region_name=aws_region)
         self.endpoint_name = endpoint_name
 
-    def run(self, im_pil, classes_to_detect: list[str] = ["person"], threshold : float = 0.5, verbose: bool = False):
+    def detect_objects(self, im_pil, classes_to_detect: list[str] = ["person"], threshold : float = 0.5, verbose: bool = False):
         """
         Run detection using the D-FINE model for the selected classes.
 
@@ -57,14 +57,25 @@ class SageMakerController:
         
         filtered_detections = [det for det in response["detections"] if det["label"] in classes_to_detect and det["score"] >= threshold]
         return filtered_detections, response["detections"]
+    
+    def detect_plates(self, im_pil, threshold: float = 0.5, verbose: bool = False):
+        image_base64 = self._encode_image_to_base64(im_pil)
+        start_time = time.time()
+        response = self._make_aws_sagemaker_request(image_base64, model="license_plate_recognition")
+        elapsed_time = time.time() - start_time
+        if verbose:
+            print(f"Sagemaker inference time: {response['time_ms']:.2f} ms; Request time: {elapsed_time * 1000:.2f} ms")
 
+        filtered_detections = [det for det in response["detections"] if det["score"] >= threshold]
+        return filtered_detections, response["detections"]
 
-    def _make_aws_sagemaker_request(self, image_base64 : str):
+    def _make_aws_sagemaker_request(self, image_base64 : str, model: str = "object_detection"):
         response = self.sagemaker_runtime.invoke_endpoint(
             EndpointName=self.endpoint_name,
             ContentType="application/json",
             Body=json.dumps({
-                "image_base64": image_base64
+                "image_base64": image_base64,
+                "model": model
             }),
         )
         return json.loads(response["Body"].read().decode())

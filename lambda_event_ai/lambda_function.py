@@ -83,13 +83,9 @@ if __name__ == "__main__":
         aws_request_id = "2afc22dd-4c08-4e5b-8cb5-b002d9be13d5"
         log_stream_name = "2025/05/15/[$LATEST]7baa3150e9d642eb9a8d7d97e920c2be"
 
-    # event = {
-    #     "topic": "cameras/axis-local/events/streaming/start",
-    #     "timestamp": "2025-05-12T20:31:55.115170Z"
-    # }
 
     event = {
-        "topic": "cameras/B8A44F976508__panoramic_tree/events/streaming/start",
+        "topic": "cameras/B8A44FB3A1F9__front/events/streaming/start",
         "streaming_options": {
             "gop_length": 26,
             "frame": "1280x720",
@@ -98,7 +94,7 @@ if __name__ == "__main__":
         },
         "post_buffer_seconds": 10,
         "pre_buffer_seconds": 10,
-        "timestamp": "2025-05-20T04:53:52.899667Z"
+        "timestamp": "2025-05-26T07:51:56.138485Z"
     }
-    
+
     lambda_handler(event, MockLambdaContext())

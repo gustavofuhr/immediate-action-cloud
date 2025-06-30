@@ -7,6 +7,8 @@ RUN pip install \
     boto3 \
     "imageio[pyav]"
 
+RUN yum install -y dejavu-sans-fonts
+
 # dfine_controller_ort.py
 COPY lambda_function.py event_ai_processor.py sagemaker_controller.py event_clip.py ./
 # COPY onnx_models/ ./onnx_models/ 
