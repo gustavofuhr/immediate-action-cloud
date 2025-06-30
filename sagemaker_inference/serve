@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# Serve script for SageMaker custom container
+export CONFIG_FILE=${CONFIG_FILE:-"/workspace/D-FINE/configs/dfine/objects365/dfine_hgnetv2_x_obj2coco.yml"}
+export CHECKPOINT_FILE=${CHECKPOINT_FILE:-"/workspace/dfine_checkpoints/dfine_x_obj2coco.pth"}
+export DEVICE=${DEVICE:-"cpu"}  # Default to CPU if DEVICE is not set
+
+# Check if --batch is the first argument
+if [[ "$1" == "--batch" ]]; then
+    echo "Running batch mode..."
+    # Shift to remove the first argument (--batch)
+    shift
+    python -u /workspace/dfine_batch.py "$@"
+else
+    echo "Running server mode..."
+    gunicorn -w 4 -b 0.0.0.0:8080 \
+        --preload \
+        --timeout 120 \
+        --log-level debug \
+        --capture-output \
+        --timeout 120 \
+        "app:app"
+fi
