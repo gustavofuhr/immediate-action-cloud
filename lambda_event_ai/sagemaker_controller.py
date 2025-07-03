@@ -58,7 +58,7 @@ class SageMakerController:
         filtered_detections = [det for det in response["detections"] if det["label"] in classes_to_detect and det["score"] >= threshold]
         return filtered_detections, response["detections"]
     
-    def detect_plates(self, im_pil, threshold: float = 0.5, verbose: bool = False):
+    def detect_plates(self, im_pil, threshold: float = 0.5, ocr_theshold: float = 0.5, verbose: bool = False):
         image_base64 = self._encode_image_to_base64(im_pil)
         start_time = time.time()
         response = self._make_aws_sagemaker_request(image_base64, model="license_plate_recognition")
@@ -66,7 +66,7 @@ class SageMakerController:
         if verbose:
             print(f"Sagemaker inference time: {response['time_ms']:.2f} ms; Request time: {elapsed_time * 1000:.2f} ms")
 
-        filtered_detections = [det for det in response["detections"] if det["score"] >= threshold]
+        filtered_detections = [det for det in response["detections"] if det["score"] >= threshold and det["ocr_confidence"] >= ocr_theshold]
         return filtered_detections, response["detections"]
 
     def _make_aws_sagemaker_request(self, image_base64 : str, model: str = "object_detection"):

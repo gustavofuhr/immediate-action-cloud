@@ -1,6 +1,8 @@
 import time
 from datetime import timedelta, datetime, timezone
 from decimal import Decimal
+from collections import defaultdict
+
 
 import boto3
 from PIL import Image, ImageDraw, ImageFont
@@ -30,7 +32,7 @@ DETECTION_CLASS_COLORS = {
 
 }
 
-CLASSES_TO_STORE = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
+CLASSES_TO_STORE = ['person', 'car_plate','bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
                     'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat',
                     'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe']
     
@@ -112,9 +114,19 @@ class EventAIProcessor:
         self.n_fragments = 0
         self.n_frames = 0
         self.seen_classes = set()
-        self.detection_stats = {}
         self.seen_plates = set()
-        self.plate_recognition_stats = {}
+        self.detection_stats = defaultdict(lambda: {
+            "total_confidence": 0.0,
+            "max_confidence": 0.0,
+            "n_frames": 0
+        })
+        self.plate_recognition_stats = defaultdict(lambda: {
+            "total_confidence": 0.0,
+            "max_confidence": 0.0,
+            "n_frames": 0,
+            "ocr_max_confidence": 0.0,
+            "ocr_total_confidence": 0.0
+        })
         self.stream.start()
 
     
@@ -143,43 +155,34 @@ class EventAIProcessor:
             
             frame_timestamp = self._compute_frame_timestamp(frag_producer_timestamp, n_frames_in_fragment, i, self.one_in_frames_ratio)
             # print("Frame timestamp: ", frame_timestamp)
-            
+
+            # first general object detection
             filtered_detections, raw_detections = self.detector.detect_objects(image_pil, classes_to_detect=DETECTION_CLASS_COLORS.keys(), threshold=0.5, verbose=(self.n_frames == 0))
             self._store_detections(self.stream_name, frame_timestamp, self.event_timestamp, frag_number, frag_producer_timestamp, frag_server_timestamp, raw_detections)            
             if filtered_detections:
                 image_pil = self._draw_detections_on_frame(image_pil, filtered_detections)
             
             for det in filtered_detections:
-                cls = det['label']
-                score = det['score']
-                if cls not in self.detection_stats:
-                    self.detection_stats[cls] = {
-                        "total_confidence": 0.0,
-                        "max_confidence": 0.0,
-                        "n_frames": 0
-                    }
-                self.detection_stats[cls]["total_confidence"] += score
-                self.detection_stats[cls]["max_confidence"] = max(self.detection_stats[cls]["max_confidence"], score)
-                self.detection_stats[cls]["n_frames"] += 1
+                self._update_detection_stats(det)
+                self.seen_classes.add(det['label'])
 
-            filtered_plates, raw_plates = self.detector.detect_plates(image_pil, threshold=0.5, verbose=(self.n_frames == 0))
+            # license plate recognition
+            filtered_plates, raw_plates = self.detector.detect_plates(image_pil, threshold=0.7, ocr_theshold=0.7, verbose=(self.n_frames == 0))
             for plate in filtered_plates:
-                plate_text = plate['ocr_text']
-                if plate_text not in self.seen_plates:
-                    self.seen_plates.add(plate_text)
-                    if plate_text not in self.plate_recognition_stats:
-                        self.plate_recognition_stats[plate_text] = {
-                            "total_confidence": 0.0,
-                            "max_confidence": 0.0,
-                            "n_frames": 0
-                        }
-                self.plate_recognition_stats[plate_text]["total_confidence"] += plate['score']
-                self.plate_recognition_stats[plate_text]["max_confidence"] = max(self.plate_recognition_stats[plate_text]["max_confidence"], plate['score'])
-                self.plate_recognition_stats[plate_text]["n_frames"] += 1
+                self._update_plate_stats(plate)
+                self.seen_plates.add(plate['ocr_text'])
+
+                # a plate is also an object
+                self.seen_classes.add("plate")
+                self._update_detection_stats({
+                    'label': 'car_plate',
+                    'score': plate['score']
+                })
+
             if filtered_plates:
                 self._store_plates(self.stream_name, frame_timestamp, self.event_timestamp, frag_number, frag_producer_timestamp, frag_server_timestamp, raw_plates)
                 image_pil = self._draw_plates_on_frame(image_pil, filtered_plates)
-
+            
             self.event_clip.add_frame(image_pil)
             self.n_frames += 1
 
@@ -199,6 +202,23 @@ class EventAIProcessor:
         frame_timestamp = fragment_timestamp + timedelta(seconds=frame_duration * original_frame_index)
         return frame_timestamp
 
+    def _update_plate_stats(self, plate):
+        text = plate['ocr_text']
+        if text not in self.seen_plates:
+            self.seen_plates.add(text)
+        stats = self.plate_recognition_stats[text]
+        stats["total_confidence"] += plate['score']
+        stats["max_confidence"] = max(stats["max_confidence"], plate['score'])
+        stats["n_frames"] += 1
+        stats["ocr_total_confidence"] += plate['ocr_confidence']
+        stats["ocr_max_confidence"] = max(stats["ocr_max_confidence"], plate['ocr_confidence'])
+
+    def _update_detection_stats(self, det):
+        cls, score = det['label'], det['score']
+        stats = self.detection_stats[cls]
+        stats["total_confidence"] += score
+        stats["max_confidence"] = max(stats["max_confidence"], score)
+        stats["n_frames"] += 1
 
 
     def on_stream_read_complete(self, stream):
@@ -228,6 +248,8 @@ class EventAIProcessor:
                 final_plate_stats[plate] = {
                     "avg_confidence": round(stats["total_confidence"] / stats["n_frames"], 4),
                     "max_confidence": round(stats["max_confidence"], 4),
+                    "ocr_avg_confidence": round(stats["ocr_total_confidence"] / stats["n_frames"], 4),
+                    "ocr_max_confidence": round(stats["ocr_max_confidence"], 4),
                     "n_frames": stats["n_frames"]
                 }
 
@@ -247,7 +269,8 @@ class EventAIProcessor:
                 print(f"    - {cls}: avg_conf={stats['avg_confidence']}, max_conf={stats['max_confidence']}, n_frames={stats['n_frames']}")
             print(f"  Plate detection stats:")
             for plate, stats in final_plate_stats.items():
-                print(f"    - {plate}: avg_conf={stats['avg_confidence']}, max_conf={stats['max_confidence']}, n_frames={stats['n_frames']}")
+                print(f"    - {plate}: avg_conf={stats['avg_confidence']}, max_conf={stats['max_confidence']}, "
+                      f"ocr_avg_conf={stats['ocr_avg_confidence']}, ocr_max_conf={stats['ocr_max_confidence']}, n_frames={stats['n_frames']}")
 
             self._update_event_record(
                 stream_name=self.stream_name,
@@ -284,7 +307,7 @@ class EventAIProcessor:
             detections,
             label_fn=lambda d: f"{d['label']}: {d['score']:.2f}",
             color_fn=lambda d: DETECTION_CLASS_COLORS[d['label']],
-            font_size=20
+            font_size=18
         )
 
     def _draw_plates_on_frame(self, frame_pil, plates):
@@ -293,7 +316,8 @@ class EventAIProcessor:
             plates,
             label_fn=lambda d: f"{d['ocr_text']} | {d['score']:.1f} | OCR: {d['ocr_confidence']:.1f}",
             color_fn=lambda d: DETECTION_CLASS_COLORS["plate"],
-            font_size=20,
+            font_size=18,
+            label_position="bottom"
         )
     
     def _create_event_record(self, stream_name, event_timestamp, lambda_context, attempt_number):

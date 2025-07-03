@@ -6,6 +6,8 @@ import imageio.v3 as iio
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 
+from PIL import ImageDraw, ImageFont
+
 def draw_boxes_on_frame(
     frame_pil,
     detections,
@@ -13,13 +15,15 @@ def draw_boxes_on_frame(
     color_fn,
     font_size=14,
     text_color=(255, 255, 255),
-    padding=2
+    padding=2,
+    label_position="top"  # can be "top" or "bottom"
 ):
     draw = ImageDraw.Draw(frame_pil)
     try:
-        font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        font_path = "/usr/share/fonts/dejavu/DejaVuSansMono.ttf"
         font = ImageFont.truetype(font_path, font_size)
-    except:
+    except Exception:
+        print("Warning: Custom font not found, using default font.")
         font = ImageFont.load_default()
 
     for det in detections:
@@ -33,6 +37,7 @@ def draw_boxes_on_frame(
 
         draw.rectangle([x1, y1, x2, y2], outline=color, width=4)
 
+        # Compute text size
         try:
             text_bbox = font.getbbox(label)  # (x_min, y_min, x_max, y_max)
             text_width = text_bbox[2] - text_bbox[0]
@@ -40,19 +45,44 @@ def draw_boxes_on_frame(
         except AttributeError:
             text_width, text_height = font.getsize(label)
 
-        rect_x1 = x1
-        rect_y1 = y1 - text_height - 2 * padding
-        rect_x2 = x1 + text_width + 2 * padding
-        rect_y2 = y1
+        # Default: label on top
+        if label_position == "top":
+            rect_x1 = x1
+            rect_y1 = y1 - text_height - 2 * padding
+            rect_x2 = x1 + text_width + 2 * padding
+            rect_y2 = y1
 
-        if rect_y1 < 0:
-            rect_y1 = y1
-            rect_y2 = y1 + text_height + 2 * padding
+            # If top is outside image, move label below box
+            if rect_y1 < 0:
+                rect_y1 = y1
+                rect_y2 = y1 + text_height + 2 * padding
+
+        elif label_position == "bottom":
+            rect_x1 = x1
+            rect_y1 = y2
+            rect_x2 = x1 + text_width + 2 * padding
+            rect_y2 = y2 + text_height + 2 * padding
+
+            # If bottom is outside image, switch to top logic
+            if rect_y2 > frame_pil.height:
+                rect_x1 = x1
+                rect_y1 = y1 - text_height - 2 * padding
+                rect_x2 = x1 + text_width + 2 * padding
+                rect_y2 = y1
+
+                # If top is outside image too, move label below box
+                if rect_y1 < 0:
+                    rect_y1 = y1
+                    rect_y2 = y1 + text_height + 2 * padding
+        else:
+            raise ValueError(f"Unknown label_position: {label_position}")
 
         draw.rectangle([rect_x1, rect_y1, rect_x2, rect_y2], fill=color)
         draw.text((rect_x1 + padding, rect_y1 + padding), label, fill=text_color, font=font)
 
     return frame_pil
+
+
 
 
 
