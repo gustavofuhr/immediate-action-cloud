@@ -3,27 +3,20 @@ from datetime import date, datetime, time
 from event_query import EventQuery
 import random
 
+from app_time_filters import get_time_range
+
 event_query = EventQuery(region_name="eu-west-1", table_name="events")
 st.set_page_config(page_title="Event Filter", layout="wide")
 st.title("🎥 Event Record Filter")
 
-# 
 # CLASSES_TO_STORE = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
 #                     'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat',
 #                     'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe']
 
 
 device_ids = event_query.get_all_device_ids()
-col1, col2, col3 = st.columns([1,1,2])
-with col1:
-    start_date = st.date_input("Start date", value=date.today())
-with col2:
-    end_date = st.date_input("End date", value=date.today())
-with col3:
-    selected_devices = st.multiselect(
-        "Devices", device_ids + ["any"], "any",
-        format_func=lambda x: x.split("__")[1] if "__" in x else x
-    )
+
+start_dt, end_dt, selected_devices = get_time_range(device_ids)
 
 tab1, tab2, tab3 = st.tabs(["Filter by object", "License plate", "Specific event"])
 with tab1:
@@ -31,7 +24,7 @@ with tab1:
     with col_obj1:
         class_filter = st.multiselect(
             "Select classes (optional):",
-            options=['person', 'animals', 'dog', 'sheep', 'cow', 'bird', 'vehicles', 'car', 'bicycle', 'motorcycle', 'train', 'truck'], 
+            options=['person', 'car_plate', 'animals', 'dog', 'sheep', 'cow', 'bird', 'vehicles', 'car', 'bicycle', 'motorcycle', 'train', 'truck'], 
             default=["person"]
         )
     with col_obj2:
@@ -55,11 +48,8 @@ with tab1:
         if not selected_devices:
             st.warning("Please select at least one device (or 'any').")
         else:
-            start_dt = datetime.combine(start_date, time.min)
-            end_dt = datetime.combine(end_date, time.max)
             if "any" in selected_devices:
                 selected_devices = device_ids
-
             print(f"Querying events from {start_dt} to {end_dt} for devices: {selected_devices}, classes: {class_filter}, threshold: {threshold}, condition: {logic_operator}")
             results = event_query.query_events(
                 start_date=start_dt,
@@ -84,11 +74,8 @@ with tab2:
         if not selected_devices or not search_plate:
             st.warning("Please select at least one device (or 'any') and enter a plate to search for.")
         else:
-            start_dt = datetime.combine(start_date, time.min)
-            end_dt = datetime.combine(end_date, time.max)
             if "any" in selected_devices:
                 selected_devices = device_ids
-
             print(f"Querying events from {start_dt} to {end_dt} for devices: {selected_devices}, plate: {search_plate}, plate threshold: {plate_threshold}, OCR threshold: {ocr_threshold}")
             results = event_query.query_events_by_plate(
                 start_date=start_dt,
@@ -121,7 +108,6 @@ with tab3:
 
     
 
-
 if "filtered_results" not in st.session_state:
     st.session_state.filtered_results = []
 if "random_batch" not in st.session_state:
@@ -142,8 +128,10 @@ if st.session_state.filtered_results:
         cols = st.columns(3)
         for i, item in enumerate(row):
             with cols[i]:
-                if item["video_url"]:
-                    st.video(item["video_url"])
+                if "video_url" not in item:
+                    # probably the video is not available yet.
+                    continue
+                st.video(item["video_url"])
                 st.caption(f"📹 {item.get('device_id', 'Unknown')} • 📅 {item['event_timestamp']}")
                 if "detection_stats" in item:
                     class_scores = [

@@ -14,7 +14,7 @@ class EventQuery:
         self.bucket_name = "motion-event-snapshots"
         self.s3 = boto3.client("s3", region_name=region_name)
 
-    def _fetch_dynamo_items(self, device_ids: list[str], start_date: datetime, end_date: datetime):
+    def _fetch_dynamo_items(self, device_ids: list[str], start_date: datetime, end_date: datetime, only_with_video: bool = False):
         if not device_ids:
             raise ValueError("device_ids list cannot be empty.")
 
@@ -38,6 +38,8 @@ class EventQuery:
                 if not last_key:
                     break
 
+        if only_with_video:
+            all_items = [item for item in all_items if "video_key" in item]
         return all_items
 
     def _filter_items_by_detection_stats(
@@ -122,7 +124,7 @@ class EventQuery:
         if not device_ids:
             raise ValueError("device_ids must be a non-empty list.")
         
-        items = self._fetch_dynamo_items(device_ids, start_date, end_date)
+        items = self._fetch_dynamo_items(device_ids, start_date, end_date, only_with_video=True)
         
         if "animals" in target_classes:
             target_classes.extend(['dog', 'sheep', 'cow', 'bird', 'horse', 'elephant', 'bear', 'zebra', 'giraffe'])
