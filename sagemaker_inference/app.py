@@ -119,7 +119,7 @@ def lazy_initialize_detector():
     if license_plate_recognizer is None:
         license_plate_recognizer = ALPR(
             detector_model="yolo-v9-t-640-license-plate-end2end",
-            ocr_model="global-plates-mobile-vit-v2-model",
+            ocr_model="cct-s-v1-global-model",
             detector_providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
             ocr_providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
         )
