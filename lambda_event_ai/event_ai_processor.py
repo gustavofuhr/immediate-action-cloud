@@ -54,7 +54,7 @@ class EventAIProcessor:
         
         self.detector = SageMakerController(aws_region, "sagemaker-inference-server-endpoint")
 
-        self.event_clip = EventClip(aws_region, s3_bucket, resize_clip_height=720)
+        self.event_clip = EventClip(aws_region, s3_bucket)
 
         self.dynamodb = boto3.resource("dynamodb", region_name=aws_region)
         self.event_table = self.dynamodb.Table("events")

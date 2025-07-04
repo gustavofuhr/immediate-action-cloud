@@ -84,17 +84,32 @@ if __name__ == "__main__":
         log_stream_name = "2025/05/15/[$LATEST]7baa3150e9d642eb9a8d7d97e920c2be"
 
 
+    # event = {
+    #     "topic": "cameras/B8A44FB3A1F9__front/events/streaming/start",
+    #     "streaming_options": {
+    #         "gop_length": 26,
+    #         "frame": "1280x720",
+    #         "fps": 25,
+    #         "encoder": "h264"
+    #     },
+    #     "post_buffer_seconds": 10,
+    #     "pre_buffer_seconds": 10,
+    #     "timestamp": "2025-05-26T07:51:56.138485Z"
+    # }
+
     event = {
-        "topic": "cameras/B8A44FB3A1F9__front/events/streaming/start",
+        "topic": "cameras/B8A44FE6D078__booth_entrance/events/streaming/start",
         "streaming_options": {
             "gop_length": 26,
-            "frame": "1280x720",
+            "frame": "1820x1080",
             "fps": 25,
             "encoder": "h264"
         },
         "post_buffer_seconds": 10,
         "pre_buffer_seconds": 10,
-        "timestamp": "2025-05-26T07:51:56.138485Z"
+        "timestamp": "2025-07-04T21:22:00.771253Z"
     }
+
+    
 
     lambda_handler(event, MockLambdaContext())
