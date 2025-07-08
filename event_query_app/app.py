@@ -7,7 +7,7 @@ from app_time_filters import get_time_range
 
 event_query = EventQuery(region_name="eu-west-1", table_name="events")
 st.set_page_config(page_title="Event Filter", layout="wide")
-st.title("🎥 Event Record Filter")
+st.title("Event Record Filter")
 
 # CLASSES_TO_STORE = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
 #                     'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat',
