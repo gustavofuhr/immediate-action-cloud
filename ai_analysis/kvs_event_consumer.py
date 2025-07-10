@@ -23,7 +23,7 @@ class KVSEventConsumer:
         return response['DataEndpoint']
 
     def get_event_frames(self, event):
-        self.stream_start_timestamp = datetime.fromisoformat(event['timestamp'].replace('Z', '+00:00'))
+        self.stream_start_timestamp = datetime.fromisoformat(event['event_timestamp'].replace('Z', '+00:00'))
         get_media_endpoint = self._get_data_endpoint(event['device_id'], 'GET_MEDIA')
         kvs_media_client = self.session.client('kinesis-video-media', endpoint_url=get_media_endpoint)
 
