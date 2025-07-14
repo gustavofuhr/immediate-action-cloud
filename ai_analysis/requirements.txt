@@ -1,5 +1,0 @@
-opencv-python
-cachetools
-boto3
-imageio==2.37.0
-fast-alpr==0.1.2
