@@ -29,11 +29,9 @@ def get_time_range(device_ids):
         with col3:
             end_date = st.date_input("End date", now.date())
         with col4:
-            end_time = st.time_input("End time", now.time())
+            end_time = st.time_input("End time", time.max)
         start_dt = datetime.combine(start_date, start_time)
-        end_dt = datetime.combine(end_date, end_time)
-        if start_dt >= end_dt:
-            st.error("Start time must be before end time.")
+        end_dt = datetime.combine(end_date, end_time)        
     elif selected == "Last 15 minutes":
         start_dt = now - timedelta(minutes=15)
         end_dt = now
@@ -57,6 +55,7 @@ def get_time_range(device_ids):
         start_dt = now - timedelta(days=7)
         end_dt = now
 
+    print(f"🔎 Querying events from {start_dt.strftime('%Y-%m-%d %H:%M:%S')} to {end_dt.strftime('%Y-%m-%d %H:%M:%S')}")
     # st.markdown(f"🔎 Querying events from **{start_dt.strftime('%Y-%m-%d %H:%M:%S')}** to **{end_dt.strftime('%Y-%m-%d %H:%M:%S')}**")
 
     return start_dt, end_dt, selected_devices
