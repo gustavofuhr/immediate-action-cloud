@@ -97,18 +97,38 @@ if __name__ == "__main__":
     #     "timestamp": "2025-05-26T07:51:56.138485Z"
     # }
 
+    # I think we have plats on the bottom event
+    # event = {
+    #     "topic": "cameras/B8A44FE6D078__booth_entrance/events/streaming/start",
+    #     "streaming_options": {
+    #         "gop_length": 26,
+    #         "frame": "1820x1080",
+    #         "fps": 25,
+    #         "encoder": "h264"
+    #     },
+    #     "post_buffer_seconds": 10,
+    #     "pre_buffer_seconds": 10,
+    #     "timestamp": "2025-07-04T21:22:00.771253Z"
+    # }
+
     event = {
-        "topic": "cameras/B8A44FE6D078__booth_entrance/events/streaming/start",
+        "topic": "cameras/B8A44FB3A1F9__front/events/streaming/start",
         "streaming_options": {
             "gop_length": 26,
-            "frame": "1820x1080",
+            "frame": "1920x1080",
             "fps": 25,
             "encoder": "h264"
         },
         "post_buffer_seconds": 10,
         "pre_buffer_seconds": 10,
-        "timestamp": "2025-07-04T21:22:00.771253Z"
+        "timestamp": "2025-06-18T15:38:14.946325Z"
     }
+
+
+    # B8A44FB3A1F9__front_event_2025-06-18T15:38:14.946325+00:00_frame_17.png
+    # B8A44FB981BB__panoramic_trains_event_2025-06-26T16:32:17.550213+00:00_frame_19.png
+
+
 
     
 

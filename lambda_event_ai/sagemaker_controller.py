@@ -28,7 +28,7 @@ class SageMakerController:
         self.sagemaker_runtime = boto3.client('sagemaker-runtime', region_name=aws_region)
         self.endpoint_name = endpoint_name
 
-    def detect_objects(self, im_pil, classes_to_detect: list[str] = ["person"], threshold : float = 0.5, verbose: bool = False):
+    def detect_objects(self, im_pil, classes_to_detect: list[str] = ["person"], threshold : float = 0.5, include_ppe_classification: bool = False, verbose: bool = False):
         """
         Run detection using the D-FINE model for the selected classes.
 
@@ -39,7 +39,8 @@ class SageMakerController:
         # encode im_pil into base64
         image_base64 = self._encode_image_to_base64(im_pil)
         start_time = time.time()
-        response = self._make_aws_sagemaker_request(image_base64)
+        model = "object_detection_and_ppe" if include_ppe_classification else "object_detection"
+        response = self._make_aws_sagemaker_request(image_base64, model=model)
         elapsed_time = time.time() - start_time
 
         if verbose:
@@ -50,7 +51,8 @@ class SageMakerController:
             {
                 "label": COCO_CLASSES[int(det["label"])],
                 "score": det["score"],
-                "bbox": det["bbox"]
+                "bbox": det["bbox"],
+                **({"ppe": det["ppe"]} if "ppe" in det else {})
             }
             for det in response["detections"]
         ]
@@ -82,6 +84,6 @@ class SageMakerController:
 
     def _encode_image_to_base64(self, im_pil: Image.Image) -> str:
         buffered = BytesIO()
-        im_pil.save(buffered, format="JPEG")  # or "PNG" depending on your needs
+        im_pil.save(buffered, format="PNG")  # JPEG maybe be used to save data
 
         return base64.b64encode(buffered.getvalue()).decode("utf-8")

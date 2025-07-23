@@ -157,14 +157,25 @@ class EventAIProcessor:
             # print("Frame timestamp: ", frame_timestamp)
 
             # first general object detection
-            filtered_detections, raw_detections = self.detector.detect_objects(image_pil, classes_to_detect=DETECTION_CLASS_COLORS.keys(), threshold=0.5, verbose=(self.n_frames == 0))
+            filtered_detections, raw_detections = self.detector.detect_objects(image_pil, classes_to_detect=DETECTION_CLASS_COLORS.keys(), threshold=0.5, include_ppe_classification=True, verbose=(self.n_frames == 0))
             self._store_detections(self.stream_name, frame_timestamp, self.event_timestamp, frag_number, frag_producer_timestamp, frag_server_timestamp, raw_detections)            
             if filtered_detections:
                 image_pil = self._draw_detections_on_frame(image_pil, filtered_detections)
             
+            ppe_detections = [det for det in filtered_detections if det['label'] == 'person' and 'ppe' in det]
+            if ppe_detections:
+                image_pil = self._draw_ppes_on_frame(image_pil, ppe_detections)
+
             for det in filtered_detections:
                 self._update_detection_stats(det)
                 self.seen_classes.add(det['label'])
+                if det['label'] == 'person' and "ppe" in det:
+                    ppe_label = "person_ppe_" + det["ppe"]["ppe_level"]
+                    self.seen_classes.add(ppe_label)
+                    self._update_detection_stats({
+                        'label': ppe_label,
+                        'score': det["ppe"]["confidence"]
+                    })
 
             # license plate recognition
             filtered_plates, raw_plates = self.detector.detect_plates(image_pil, threshold=0.7, ocr_theshold=0.7, verbose=(self.n_frames == 0))
@@ -301,11 +312,49 @@ class EventAIProcessor:
         response = self.kvs_client.get_data_endpoint(StreamName=stream_name, APIName=api_name)
         return response['DataEndpoint']
     
+    def _draw_ppes_on_frame(self, frame_pil, detections):
+        def label_fn(det):
+            label_map = {
+                "full": "PPE: full",
+                "upper": "PPE: upper",
+                "bottom": "PPE: bottom",
+                "noppe": "no PPE",
+                "na": "PPE: n/a"
+            }
+            if det["label"] == "person" and "ppe" in det:
+                level = det["ppe"]["ppe_level"]
+                return label_map.get(level, "PPE: unknown") + f" ({det['ppe']['confidence']:.2f})"
+        
+        def color_fn(det):
+            color_map = {
+                "full": (0, 255, 0),  # green
+                "upper":  (225, 165, 0),  # orange
+                "bottom": (225, 165, 0),  # orange
+                "noppe": (210, 0, 0),  # dark red
+                "na": (128, 128, 128)  # gray
+            }
+            if det["label"] == "person" and "ppe" in det:
+                level = det["ppe"]["ppe_level"]
+                return color_map.get(level, (255, 0, 0))
+            
+        return draw_boxes_on_frame(
+            frame_pil,
+            detections,
+            label_fn=label_fn,
+            color_fn=color_fn,
+            font_size=14,
+            text_color=(255, 255, 255),
+            padding=2,
+            label_position="bottom",
+            invisible_box=True  # do not draw the bounding box for PPE
+        )
+        
+    
     def _draw_detections_on_frame(self, frame_pil, detections):
         return draw_boxes_on_frame(
             frame_pil,
             detections,
-            label_fn=lambda d: f"{d['label']}: {d['score']:.2f}",
+            label_fn=lambda det: f"{det['label']}: {det['score']:.2f}",
             color_fn=lambda d: DETECTION_CLASS_COLORS[d['label']],
             font_size=18
         )

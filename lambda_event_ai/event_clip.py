@@ -8,6 +8,8 @@ import numpy as np
 
 from PIL import ImageDraw, ImageFont
 
+
+
 def draw_boxes_on_frame(
     frame_pil,
     detections,
@@ -16,7 +18,8 @@ def draw_boxes_on_frame(
     font_size=14,
     text_color=(255, 255, 255),
     padding=2,
-    label_position="top"  # can be "top" or "bottom"
+    label_position="top",  # can be "top" or "bottom"
+    invisible_box=False
 ):
     draw = ImageDraw.Draw(frame_pil)
     try:
@@ -35,7 +38,8 @@ def draw_boxes_on_frame(
         label = label_fn(det)
         color = color_fn(det)
 
-        draw.rectangle([x1, y1, x2, y2], outline=color, width=4)
+        if not invisible_box:
+            draw.rectangle([x1, y1, x2, y2], outline=color, width=4) # actual object bbox
 
         # Compute text size
         try:
