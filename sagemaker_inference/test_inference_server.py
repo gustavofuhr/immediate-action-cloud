@@ -27,3 +27,10 @@ def get_random_coco_images(n_images=5):
 def get_plate_images():
     return ["https://tse1.mm.bing.net/th/id/OIP.P2JPMypZjrBWKSVL0SYhOAHaFj?r=0&w=355&h=355&c=7",
             "https://tse2.mm.bing.net/th/id/OIP.XYQfthJf3fWqW5yGRE9hYwHaFc?r=0&w=348&h=348&c=7"]
+
+
+def get_local_images():
+    return [
+        "test_images/B8A44FB3A1F9__front_event_2025-06-18T15:38:14.946325+00:00_frame_17.png",
+        "test_images/B8A44FB981BB__panoramic_trains_event_2025-06-26T16:32:17.550213+00:00_frame_19.png"
+    ]

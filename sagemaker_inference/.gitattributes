@@ -1,1 +1,2 @@
 dfine_checkpoints/*.pth filter=lfs diff=lfs merge=lfs -text
+models/ppe/ppe_classifier_v1_resize_exact_224.pt filter=lfs diff=lfs merge=lfs -text

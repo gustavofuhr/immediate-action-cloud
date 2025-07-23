@@ -14,7 +14,7 @@ from fast_alpr import ALPR
 import torch
 torch.multiprocessing.set_start_method('spawn', force=True)
 
-from dfine_controller import DFINE_Controller
+from object_detection_controller import ObjectDetectionController
 
 app = Flask(__name__)
 CORS(app)
@@ -24,7 +24,7 @@ gunicorn_logger = logging.getLogger("gunicorn.error")
 app.logger.handlers = gunicorn_logger.handlers
 app.logger.setLevel(gunicorn_logger.level)
 
-d_fine_detector = None
+object_detector = None
 license_plate_recognizer = None
 
 def load_image_from_file(file):
@@ -81,17 +81,22 @@ def detect():
             return jsonify({'error': 'No valid image data provided'}), 400
         
         model_type = request.json.get("model", "object_detection")
-        global d_fine_detector, license_plate_recognizer
-        image_pil = Image.fromarray(image)
+        global object_detector, license_plate_recognizer
+        image_pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
         start = time.time()
         
+        # TODO: refactor this so I need only to send one time the image (e.g. option "all" models)
         if model_type == "license_plate_recognition":
             results = license_plate_recognizer.predict(image)
             detections = _lpr_results_to_dicts(results)
-        else: # default to object detection
+        elif model_type.startswith("object_detection"):
             classes_to_detect = request.json.get('classes_to_detect', None)
-            detections = d_fine_detector.run(image_pil, classes_to_detect=classes_to_detect)
 
+            include_ppe = model_type == "object_detection_and_ppe"
+            detections = object_detector.run(image_pil, classes_to_detect=classes_to_detect, include_ppe_classification=include_ppe)
+        else: 
+            return jsonify({'error': 'Invalid model type specified'}), 400
+            
         elapsed_time_ms = (time.time() - start) * 1000
         return jsonify({'detections': detections, 'time_ms': round(elapsed_time_ms, 2)}), 200
     except Exception as e:
@@ -110,11 +115,10 @@ def lazy_initialize_detector():
     checkpoint_file = os.environ.get('CHECKPOINT_FILE', '/workspace/dfine_checkpoints/dfine_x_obj2coco.pth')
     device = os.environ.get('DEVICE', 'cpu')
 
-    global d_fine_detector
-    if d_fine_detector is None:
-        app.logger.info(f'Initializing detector with config file: {config_file}, checkpoint file: {checkpoint_file}, device: {device}')
-        d_fine_detector = DFINE_Controller(config_file, checkpoint_file, device)
-
+    global object_detector 
+    if object_detector is None:
+        object_detector = ObjectDetectionController(config_file, checkpoint_file, device, include_ppe_classification=True)
+    
     global license_plate_recognizer
     if license_plate_recognizer is None:
         license_plate_recognizer = ALPR(
