@@ -67,8 +67,6 @@ class DFINE_Controller:
                     },
                     'score': filtered_scores[i].item()
                 })
-                print(f"Detected {filtered_labels[i]} with confidence {filtered_scores[i].item()}")
-        print(detections)
         return detections
 
 
