@@ -1,11 +1,11 @@
-FROM registry.cn-hangzhou.aliyuncs.com/peterande/dfine:v1
+FROM nvidia/cuda:12.0.1-cudnn8-runtime-ubuntu22.04
 
 WORKDIR /workspace/
+RUN apt update && apt install -y git python3-pip
 
 RUN git clone https://github.com/Peterande/D-FINE.git && \
     cd D-FINE && \
     pip install -r requirements.txt && \
-    pip install -r tools/inference/requirements.txt && \
     pip install opencv-python tqdm 
     
 RUN pip install fast-alpr[onnx-gpu]==0.2.0

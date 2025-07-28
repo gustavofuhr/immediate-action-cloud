@@ -71,53 +71,53 @@ def list_models():
 @app.route('/invocations', methods=['POST'])
 @app.route('/detect/', methods=['POST'])
 def detect():
-    # try:
-    if 'image_file' in request.files:
-        file = request.files['image_file']
-        image_pil = load_image_pil_from_file(file)
-    elif 'image_base64' in request.json:
-        base64_data = request.json['image_base64']
-        image_pil = load_image_pil_from_base64(base64_data)
-    elif 'image_url' in request.json:
-        url = request.json['image_url']
-        image_pil = load_image_pil_from_url(url)
-    else:
-        return jsonify({'error': 'No valid image data provided'}), 400
+    try:
+        if 'image_file' in request.files:
+            file = request.files['image_file']
+            image_pil = load_image_pil_from_file(file)
+        elif 'image_base64' in request.json:
+            base64_data = request.json['image_base64']
+            image_pil = load_image_pil_from_base64(base64_data)
+        elif 'image_url' in request.json:
+            url = request.json['image_url']
+            image_pil = load_image_pil_from_url(url)
+        else:
+            return jsonify({'error': 'No valid image data provided'}), 400
 
-    global model_pipelines
-    models_to_run = request.json.get("models", ["object_detection"])
-    if not isinstance(models_to_run, list):
-        return jsonify({'error': '`models` must be a list of model names'}), 400
+        global model_pipelines
+        models_to_run = request.json.get("models", ["object_detection"])
+        if not isinstance(models_to_run, list):
+            return jsonify({'error': '`models` must be a list of model names'}), 400
 
-    overall_start = time.time()
-    results = {}
+        overall_start = time.time()
+        results = {}
 
-    for model_name in models_to_run:
-        if model_name not in model_pipelines:
-            return jsonify({'error': f"Model '{model_name}' not found"}), 400
+        for model_name in models_to_run:
+            if model_name not in model_pipelines:
+                return jsonify({'error': f"Model '{model_name}' not found"}), 400
 
-        model = model_pipelines[model_name].model
+            model = model_pipelines[model_name].model
 
-        model_start = time.time()
-        detections = model.run(image_pil, 
-                               threshold=request.json.get("threshold", 0.5),
-                               classes_to_detect=request.json.get("classes_to_detect", ["person"]))
-        model_elapsed = (time.time() - model_start) * 1000
+            model_start = time.time()
+            detections = model.run(image_pil, 
+                                threshold=request.json.get("threshold", 0.5),
+                                classes_to_detect=request.json.get("classes_to_detect", ["person"]))
+            model_elapsed = (time.time() - model_start) * 1000
 
-        results[model_name] = {
-            "detections": detections,
-            "time_ms": round(model_elapsed, 2)
-        }
+            results[model_name] = {
+                "detections": detections,
+                "time_ms": round(model_elapsed, 2)
+            }
 
-    overall_elapsed = (time.time() - overall_start) * 1000
+        overall_elapsed = (time.time() - overall_start) * 1000
 
-    return jsonify({
-        "results": results,
-        "total_time_ms": round(overall_elapsed, 2)
-    }), 200
+        return jsonify({
+            "results": results,
+            "total_time_ms": round(overall_elapsed, 2)
+        }), 200
 
-    # except Exception as e:
-    #     return jsonify({'error': str(e)}), 500
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/ping', methods=['GET'])

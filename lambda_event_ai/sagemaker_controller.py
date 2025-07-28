@@ -14,13 +14,15 @@ class SageMakerController:
         self.sagemaker_runtime = boto3.client('sagemaker-runtime', region_name=aws_region)
         self.endpoint_name = endpoint_name
 
-    def detect_objects(self, im_pil, classes_to_detect: list[str] = ["person"], threshold : float = 0.5, include_ppe_classification: bool = False, verbose: bool = False):
+    def predict(self, im_pil, models, configs, verbose: bool = False):
         """
-        Run detection using the D-FINE model for the selected classes.
+        Call sagemaker endpoint for inference, might running multiple models at once.
 
         image: PIL image
-        classes_to_detect: list of int, classes to detect from COCO dataset (default: [0] "person")
-        threshold: float, detection threshold (default: 0.5)
+        models: list of str, names of the models to run
+        params: dict, parameters for the model, such as:
+            classes_to_detect: list of int, classes to detect from COCO dataset 
+            threshold: float, detection threshold 
         """
         # encode im_pil into base64
         image_base64 = self._encode_image_to_base64(im_pil)

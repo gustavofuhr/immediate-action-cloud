@@ -8,6 +8,22 @@ import numpy as np
 
 from PIL import ImageDraw, ImageFont
 
+DETECTION_CLASS_COLORS = {
+    'person': (204, 0, 0),  
+    'car': (0, 153, 0),  
+    'bicycle': (0, 153, 0),
+    'motorcycle': (0, 153, 0),  
+    'bus': (0, 153, 0),  
+    'train': (0, 153, 0),  
+    'truck': (0, 153, 0),  
+    'bird': (0, 51, 204),  
+    'dog': (0, 51, 204),
+    'sheep': (0, 51, 204),
+    'cow': (0, 51, 204),
+    'cat': (0, 51, 204),
+    'horse': (0, 51, 204),
+    'plate': (230, 138, 0)
+}
 
 
 def draw_boxes_on_frame(

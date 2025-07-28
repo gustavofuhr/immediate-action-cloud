@@ -14,23 +14,7 @@ from sagemaker_controller import SageMakerController
 from event_clip import EventClip, draw_boxes_on_frame
 
 
-DETECTION_CLASS_COLORS = {
-    'person': (204, 0, 0),  
-    'car': (0, 153, 0),  
-    'bicycle': (0, 153, 0),
-    'motorcycle': (0, 153, 0),  
-    'bus': (0, 153, 0),  
-    'train': (0, 153, 0),  
-    'truck': (0, 153, 0),  
-    'bird': (0, 51, 204),  
-    'dog': (0, 51, 204),
-    'sheep': (0, 51, 204),
-    'cow': (0, 51, 204),
-    'cat': (0, 51, 204),
-    'horse': (0, 51, 204),
-    'plate': (230, 138, 0)
 
-}
 
 CLASSES_TO_STORE = ['person', 'car_plate','bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
                     'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat',
@@ -52,7 +36,8 @@ class EventAIProcessor:
         self.session = boto3.Session(region_name=aws_region) # TODO: do I need aws_region?
         self.kvs_client = self.session.client("kinesisvideo")        
         
-        self.detector = SageMakerController(aws_region, "sagemaker-inference-server-endpoint")
+        # DEBUG: TODO: WARNING: This is a temporary solution for testing
+        self.sagemaker_inference = SageMakerController(aws_region, "sagemaker-inference-server-endpoint-loadtest")
 
         self.event_clip = EventClip(aws_region, s3_bucket)
 
@@ -156,8 +141,11 @@ class EventAIProcessor:
             frame_timestamp = self._compute_frame_timestamp(frag_producer_timestamp, n_frames_in_fragment, i, self.one_in_frames_ratio)
             # print("Frame timestamp: ", frame_timestamp)
 
+
+            self.sagemaker_inference.predict(image_pil, models, params)
+
             # first general object detection
-            filtered_detections, raw_detections = self.detector.detect_objects(image_pil, classes_to_detect=DETECTION_CLASS_COLORS.keys(), threshold=0.5, include_ppe_classification=True, verbose=(self.n_frames == 0))
+            filtered_detections, raw_detections = self.sagemaker_inference.detect_objects(image_pil, classes_to_detect=DETECTION_CLASS_COLORS.keys(), threshold=0.5, include_ppe_classification=True, verbose=(self.n_frames == 0))
             self._store_detections(self.stream_name, frame_timestamp, self.event_timestamp, frag_number, frag_producer_timestamp, frag_server_timestamp, raw_detections)            
             if filtered_detections:
                 image_pil = self._draw_detections_on_frame(image_pil, filtered_detections)

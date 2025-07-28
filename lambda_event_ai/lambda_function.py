@@ -1,10 +1,11 @@
 import json
 from datetime import datetime
-import sys
-sys.path.append("package/")
 import time
 
+from lambda_config import get_ai_config
 from event_ai_processor import EventAIProcessor, StreamNotReadyError
+
+
 
 def return_ok_response():
     d = {
@@ -36,10 +37,10 @@ def lambda_handler(event, context):
     }
     """        
     print(json.dumps(event, indent=4))
-    event_ai_processor = EventAIProcessor(aws_region="eu-west-1")
     topic = event["topic"]
     stream_name = topic.split("/")[1]
     start_timestamp = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
+    event_ai_processor = EventAIProcessor(aws_region="eu-west-1", ai_config=get_ai_config(stream_name))
 
     lambda_context = {
         "lambda_function_invoked_arn": context.invoked_function_arn,
