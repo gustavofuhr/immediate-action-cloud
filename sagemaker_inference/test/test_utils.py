@@ -2,10 +2,12 @@ import os
 import json
 import random
 import urllib.request
+import base64
 
 from PIL import Image, ImageDraw
 import matplotlib.pyplot as plt
 import requests
+import cv2
 
 import sys
 sys.path.append("../../lambda_event_ai/")
@@ -130,3 +132,23 @@ def draw_results_by_model(image_path_or_url, response: dict):
         plt.title(f"Model: {model_name}")
         plt.axis("off")
         plt.show()
+
+
+def make_local_request(image, models, classes_to_detect, model_endpoint="http://localhost:8080/detect/"):
+    payload = {"models": models, "classes_to_detect": classes_to_detect}
+
+    if image.startswith("http"):
+        payload["image_url"] = image
+    else:
+        img = cv2.imread(image)
+        if img is None:
+            print(f"Failed to read image {image}")
+            return None
+        _, img_encoded = cv2.imencode('.png', img)
+        payload["image_base64"] = base64.b64encode(img_encoded).decode('utf-8')
+
+    response = requests.post(model_endpoint, json=payload)
+    if response.status_code != 200:
+        print(f"Failed for {image}: {response.text}")
+        return None
+    return response.json()
