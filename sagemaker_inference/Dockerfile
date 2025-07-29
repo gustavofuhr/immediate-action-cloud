@@ -1,7 +1,8 @@
 FROM nvidia/cuda:12.0.1-cudnn8-runtime-ubuntu22.04
 
 WORKDIR /workspace/
-RUN apt update && apt install -y git python3-pip
+RUN apt update && apt install -y git python3-pip libgl1
+
 
 RUN git clone https://github.com/Peterande/D-FINE.git && \
     cd D-FINE && \
