@@ -7,7 +7,7 @@ GPU = True
 OBJECT_DETECTION_MODEL = "dfine_x_obj2coco"
 AWS_REGION = "eu-west-1"
 
-IMAGE_NAME = "sagemaker_inference_server_loadtest"
+IMAGE_NAME = "sagemaker_inference_server_test"
 ECR_REPO_NAME = IMAGE_NAME
 
 obj_models = {
@@ -54,7 +54,7 @@ subprocess.run(["docker", "tag", f"{IMAGE_NAME}:latest", ecr_uri], check=True)
 subprocess.run(["docker", "push", ecr_uri], check=True)
 
 # ====== 2. DEPLOY TO SAGEMAKER ======
-ecr_uri_base = ecr_uri.replace("_loadtest", "")
+ecr_uri_base = ecr_uri #.replace("_loadtest", "")
 model_name = IMAGE_NAME.replace("_", "-")
 execution_role_arn = "arn:aws:iam::354918369325:role/AmazonSageMaker-ExecutionRole"
 env_vars = obj_models[OBJECT_DETECTION_MODEL].copy()
