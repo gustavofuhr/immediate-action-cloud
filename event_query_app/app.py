@@ -1,9 +1,9 @@
 import streamlit as st
-from datetime import date, datetime, time
-from event_query import EventQuery
 import random
 
+import pandas as pd
 from app_time_filters import get_time_range
+from event_query import EventQuery, get_event_stats
 
 event_query = EventQuery(region_name="eu-west-1", table_name="events")
 st.set_page_config(page_title="Event Filter", layout="wide")
@@ -49,15 +49,19 @@ with tab1:
             st.warning("Please select at least one device (or 'any').")
         else:
             if "any" in selected_devices:
-                selected_devices = device_ids
-            print(f"Querying events from {start_dt} to {end_dt} for devices: {selected_devices}, classes: {class_filter}, threshold: {threshold}, condition: {logic_operator}")
+                actual_devices = device_ids
+            else:
+                actual_devices = selected_devices
+            st.session_state.actual_selected_devices = actual_devices  # store selecte devices in session state
+
+            print(f"Querying events from {start_dt} to {end_dt} for devices: {actual_devices}, classes: {class_filter}, threshold: {threshold}, condition: {logic_operator}")
             results = event_query.query_events(
                 start_date=start_dt,
                 end_date=end_dt,
                 target_classes=class_filter,
                 threshold=threshold,
                 condition=logic_operator,
-                device_ids=selected_devices
+                device_ids=actual_devices
             )
             st.session_state.filtered_results = results
             st.session_state.random_batch = random.sample(results, min(12, len(results)))
@@ -75,7 +79,10 @@ with tab2:
             st.warning("Please select at least one device (or 'any') and enter a plate to search for.")
         else:
             if "any" in selected_devices:
-                selected_devices = device_ids
+                actual_devices = device_ids
+            else:
+                actual_devices = selected_devices
+            st.session_state.actual_selected_devices = actual_devices
             print(f"Querying events from {start_dt} to {end_dt} for devices: {selected_devices}, plate: {search_plate}, plate threshold: {plate_threshold}, OCR threshold: {ocr_threshold}")
             results = event_query.query_events_by_plate(
                 start_date=start_dt,
@@ -83,7 +90,7 @@ with tab2:
                 search_plate=search_plate,
                 plate_threshold=plate_threshold,
                 ocr_threshold=ocr_threshold,
-                device_ids=selected_devices
+                device_ids=actual_devices
             )
             st.session_state.filtered_results = results
             st.session_state.random_batch = random.sample(results, min(12, len(results)))
@@ -142,3 +149,30 @@ if st.session_state.filtered_results:
                     st.caption(f"🏷️ {', '.join(class_scores)}")
                 else:
                     st.caption(f"🏷️ {', '.join(item.get('seen_classes', []))}")
+
+    selected_for_stats = st.session_state.get("actual_selected_devices", [])
+    if st.session_state.filtered_results and selected_for_stats:
+        stats = get_event_stats(
+            st.session_state.filtered_results,
+            device_ids
+        )
+
+        st.markdown("---")
+        st.subheader("📊 Event Stats per Device")
+        col_stats, col_missing = st.columns([2, 1])
+        with col_stats:
+            stats_with_events = [s for s in stats if s["Events"] > 0]
+            if stats_with_events:
+                df = pd.DataFrame(stats_with_events).drop(columns=["Color"])
+                st.dataframe(df, use_container_width=True)
+            else:
+                st.info("No events found for selected devices.")
+        with col_missing:
+            missing = [s["Device"] for s in stats if s["Events"] == 0 and s["Device"] in selected_for_stats]
+            if missing:
+                st.markdown("#### ❌ Devices with no events")
+                for d in missing:
+                    st.markdown(f"- :orange[{d}]")
+            else:
+                st.markdown("All selected devices have events. 🎉")
+

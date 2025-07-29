@@ -1,8 +1,10 @@
-import boto3
-from boto3.dynamodb.conditions import Key, Attr
 from datetime import datetime
 from cachetools import TTLCache, cached
 import json
+
+import boto3
+from boto3.dynamodb.conditions import Key, Attr
+import pandas as pd
 
 # Global cache: max 1 item (we're only caching this one call), TTL = 3600 seconds (1 hour)
 device_id_cache = TTLCache(maxsize=1, ttl=3600)
@@ -159,7 +161,7 @@ class EventQuery:
         results = [self._item_to_dict(item) for item in filtered_items]
         return results
 
-    def get_event_by_id_and_timestamp(self, device_id: str, event_timestamp: str) -> dict | None:
+    def get_event_by_id_and_timestamp(self, device_id: str, event_timestamp: str) -> dict:
         response = self.table.get_item(
             Key={
                 "device_id": device_id,
@@ -178,3 +180,42 @@ class EventQuery:
             return sorted(data["cameras"])
         
     
+def get_event_stats(filtered_results, all_device_ids):
+    devices_to_check = all_device_ids
+
+    # Group events by device_id
+    device_events = {d: [] for d in devices_to_check}
+    for event in filtered_results:
+        dev = event["device_id"]
+        if dev in device_events:
+            device_events[dev].append(event)
+
+    stats = []
+    for dev in devices_to_check:
+        events = device_events[dev]
+        if events:
+            timestamps = [e["event_timestamp"][:19].replace("T", " ") for e in events]
+            timestamps_dt = [datetime.fromisoformat(t.replace(" ", "T")) for t in timestamps]
+            timestamps_dt.sort()
+            first = timestamps_dt[0].strftime("%Y-%m-%d %H:%M")
+            last = timestamps_dt[-1].strftime("%Y-%m-%d %H:%M")
+            stats.append(
+                {
+                    "Device": dev,
+                    "Events": len(events),
+                    "First event": first,
+                    "Last event": last,
+                    "Color": "normal",
+                }
+            )
+        else:
+            stats.append(
+                {
+                    "Device": dev,
+                    "Events": 0,
+                    "First event": "-",
+                    "Last event": "-",
+                    "Color": "warning",
+                }
+            )
+    return stats
