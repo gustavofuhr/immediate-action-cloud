@@ -14,8 +14,6 @@ from sagemaker_controller import SageMakerController
 from event_clip import EventClip, draw_boxes_on_frame
 
 
-
-
 CLASSES_TO_STORE = ['person', 'car_plate','bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
                     'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat',
                     'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe']
@@ -30,14 +28,15 @@ class StreamNotReadyError(Exception):
 
 class EventAIProcessor:
 
-    def __init__(self, aws_region, s3_bucket = "motion-event-snapshots"):
+    def __init__(self, aws_region, stream_ai_config, s3_bucket = "motion-event-snapshots"):
+        self.stream_ai_config = stream_ai_config
         self.kvs_fragment_processor = KvsFragementProcessor()
         
-        self.session = boto3.Session(region_name=aws_region) # TODO: do I need aws_region?
+        self.session = boto3.Session(region_name=aws_region) 
         self.kvs_client = self.session.client("kinesisvideo")        
         
         # DEBUG: TODO: WARNING: This is a temporary solution for testing
-        self.sagemaker_inference = SageMakerController(aws_region, "sagemaker-inference-server-endpoint-loadtest")
+        self.sagemaker_inference = SageMakerController(aws_region, "sagemaker-inference-server-test-endpoint")
 
         self.event_clip = EventClip(aws_region, s3_bucket)
 
@@ -139,10 +138,11 @@ class EventAIProcessor:
             image_pil = Image.fromarray(frame)  
             
             frame_timestamp = self._compute_frame_timestamp(frag_producer_timestamp, n_frames_in_fragment, i, self.one_in_frames_ratio)
-            # print("Frame timestamp: ", frame_timestamp)
 
-
-            self.sagemaker_inference.predict(image_pil, models, params)
+            image_pil.save(f"frame_{self.n_frames}.png")  # Save frame for debugging
+            model_prediction = self.sagemaker_inference.predict(image_pil, self.stream_ai_config["models"])
+            print(model_prediction)
+            exit(10)
 
             # first general object detection
             filtered_detections, raw_detections = self.sagemaker_inference.detect_objects(image_pil, classes_to_detect=DETECTION_CLASS_COLORS.keys(), threshold=0.5, include_ppe_classification=True, verbose=(self.n_frames == 0))

@@ -155,7 +155,7 @@ def get_models_and_pipelines():
             version="v1.0"
         )
 
-        model_pipelines["object_detection_then_all"] = ModelInfo(
+        model_pipelines["object_detection_then_ppe_then_lpr"] = ModelInfo(
             model=ObjectDetectionMultiStagePipeline(
                 object_detector=model_pipelines["object_detection"].model,
                 chained_models=[

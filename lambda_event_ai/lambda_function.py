@@ -36,11 +36,12 @@ def lambda_handler(event, context):
         "active": True
     }
     """        
+    print("-------------- Lambda Event AI Processor --------------")
     print(json.dumps(event, indent=4))
     topic = event["topic"]
     stream_name = topic.split("/")[1]
     start_timestamp = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
-    event_ai_processor = EventAIProcessor(aws_region="eu-west-1", ai_config=get_ai_config(stream_name))
+    event_ai_processor = EventAIProcessor(aws_region="eu-west-1", stream_ai_config=get_ai_config(stream_name))
 
     lambda_context = {
         "lambda_function_invoked_arn": context.invoked_function_arn,
