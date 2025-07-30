@@ -12,7 +12,7 @@ class PPEClassifierController(ModelController):
 
     def __init__(self, model_path, device = None):
         super().__init__(model_path, device)
-        self.model = torch.load(self.model_path, map_location=self.device)
+        self.model = torch.load(self.model_path, map_location=self.device, weights_only=False)
         self.model.eval()
 
         self.DEFAULT_MEAN = (0.485, 0.456, 0.406)
@@ -26,17 +26,28 @@ class PPEClassifierController(ModelController):
         ])
         self.classes =  ["bottom", "full", "na", "noppe", "upper"]
 
-    def run(self, image_pil: Image.Image, threshold: float = 0.5, classes_to_detect: list[str] = None) -> list[dict]:
+    def get_default_parameters(self) -> dict:
+        return {
+            "threshold": 0.7
+        }
+    
+    def filter_results(self, results: list[dict], params: dict) -> list[dict]:
+        if params is None:
+            params = self.get_default_parameters()
+        return [r for r in results if r['confidence'] >= params["threshold"]]
+
+    def run(self, image_pil: Image.Image, param : dict = None) -> list[dict]:
         image = self.transform(image_pil).unsqueeze(0).to(self.device)
         with torch.no_grad():
             output = self.model(image)
             probabilities = F.softmax(output, dim=1)
             confidence, predicted_class = torch.max(probabilities, 1)
 
-        return {
+        res = {
             "ppe_level": self.classes[predicted_class.item()], 
             "confidence": confidence.item()
         }
+        return self.filter_results([res], param)[0]
 
 
 class LetterboxTransform:

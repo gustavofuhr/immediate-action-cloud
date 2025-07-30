@@ -28,7 +28,6 @@ class ChainedModel:
         if not detections:
             return []
 
-
         new_detections = []
         n_calls = 0
         for i, d in enumerate(detections):
@@ -76,11 +75,19 @@ class ObjectDetectionMultiStagePipeline(ModelController):
         self.object_detector = object_detector
         self.chained_models = chained_models
 
-    def run(self, image_pil: Image.Image, threshold: float = 0.5, classes_to_detect: list[str] = ["person"]) -> list[dict]:
-        detections = self.object_detector.run(image_pil, threshold, classes_to_detect)
+    def get_default_parameters(self) -> dict:
+        default_params = self.object_detector.get_default_parameters()
+        default_params["chained_models"] = [ch_model.model.get_default_parameters()
+                                                        for ch_model in self.chained_models]
+        return default_params
+
+    def run(self, image_pil: Image.Image, params : dict = None) -> list[dict]:
+        if params is None:
+            params = self.get_default_parameters()
+        detections = self.object_detector.run(image_pil, params)
         for ith, ch_model in enumerate(self.chained_models):
             print("Running chained model", ith + 1, "of", len(self.chained_models))
-            detections, n_calls = ch_model.run_model_for_each_detection(image_pil, detections, threshold)
+            detections, n_calls = ch_model.run_model_for_each_detection(image_pil, detections, params["chained_models"][ith])
             print(f"Total calls to chained model: {n_calls}")
         return detections
     

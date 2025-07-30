@@ -12,7 +12,25 @@ import cv2
 import sys
 sys.path.append("../../lambda_event_ai/")
 from event_clip import draw_boxes_on_frame
-from event_ai_processor import DETECTION_CLASS_COLORS
+
+DETECTION_CLASS_COLORS = {
+    'person': (204, 0, 0),  
+    'car': (0, 153, 0),  
+    'bicycle': (0, 153, 0),
+    'motorcycle': (0, 153, 0),  
+    'bus': (0, 153, 0),  
+    'train': (0, 153, 0),  
+    'truck': (0, 153, 0),  
+    'bird': (0, 51, 204),  
+    'dog': (0, 51, 204),
+    'sheep': (0, 51, 204),
+    'cow': (0, 51, 204),
+    'cat': (0, 51, 204),
+    'horse': (0, 51, 204),
+    'plate': (230, 138, 0)
+}
+
+
 
 def get_random_coco_images(n_images=5):
     json_path = "instances_val2017.json"
@@ -134,8 +152,8 @@ def draw_results_by_model(image_path_or_url, response: dict):
         plt.show()
 
 
-def make_local_request(image, models, classes_to_detect, model_endpoint="http://localhost:8080/detect/"):
-    payload = {"models": models, "classes_to_detect": classes_to_detect}
+def make_local_request(image, models : list, params : dict = None, model_endpoint : str ="http://localhost:8080/detect/"):
+    payload = {"models": models, "per_model_params": params or {}}
 
     if image.startswith("http"):
         payload["image_url"] = image

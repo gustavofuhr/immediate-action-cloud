@@ -19,12 +19,27 @@ class LPR_Controller(ModelController):
             ocr_model=ocr_model,
             detector_providers=providers,
             ocr_providers=providers
-        )
+    )
 
-    def run(self, image_pil: Image.Image, threshold: float = 0.5, classes_to_detect: list[str] = None) -> list[dict]:
+    def get_default_parameters(self):
+        return {
+            "threshold": 0.5,
+            "ocr_confidence_threshold": 0.5
+        }
+    
+    def filter_results(self, results: list[dict], params: dict = None) -> list[dict]:
+        if params is None:
+            params = self.get_default_parameters()
+        return [
+            r for r in results if r['score'] >= params['threshold'] and \
+                r['ocr_confidence'] >= params['ocr_confidence_threshold']
+        ]
+
+    def run(self, image_pil: Image.Image, params: dict = None) -> list[dict]:
         image = np.array(image_pil)
         results = self.model.predict(image)
-        return self._lpr_results_to_dicts(results)
+        return self.filter_results(self._lpr_results_to_dicts(results), params)
+    
 
     def _lpr_results_to_dicts(self, model_results: list[dict]) -> list[dict]:
         detections = []

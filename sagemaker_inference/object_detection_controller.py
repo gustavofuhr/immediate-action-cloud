@@ -24,14 +24,27 @@ class ObjectDetectionController(ModelController):
         super().__init__(checkpoint_file, device)
         self.detector = DFINE_Controller(config_file, checkpoint_file, device)
 
-    def run(self, image_pil: Image.Image, threshold: float = 0.5, classes_to_detect: list[str] = ["person"]) -> list[dict]:
+    def run(self, image_pil: Image.Image, param: dict = None) -> list[dict]:
         # DFINE_Controller works with COCO classes *integers*
-        coco_classes_indices = [COCO_CLASS_TO_IDX[c] for c in classes_to_detect if c in COCO_CLASS_TO_IDX]
+        if param is None:
+            param = self.get_default_parameters()
+        coco_classes_indices = [COCO_CLASS_TO_IDX[c] for c in param["classes_to_detect"] if c in COCO_CLASS_TO_IDX]
 
-        detections = self.detector.run(image_pil, threshold, coco_classes_indices)
+        detections = self.detector.run(image_pil, param["threshold"], coco_classes_indices)
         for d in detections:
             d['label'] = COCO_CLASSES[d['label']]
-        return self._filter_duplicates(detections)
+
+        filtered_detections = self.filter_results(detections, param)
+        return self._filter_duplicates(filtered_detections)
+    
+    def get_default_parameters(self) -> dict:
+        return {
+            "threshold": 0.5,
+            "classes_to_detect": ["person"]
+        }
+    
+    def filter_results(self, results: list[dict], params: dict) -> list[dict]:
+        return [r for r in results if r['score'] >= params["threshold"]] # classes are already filtered in run()
 
     def _filter_duplicates(self, detections: list[dict], iou_threshold: float = 0.99, filter_classes: set[str] = {"car", "truck", "bus"}) -> list[dict]:
         detections = sorted(detections, key=lambda d: d["score"], reverse=True)

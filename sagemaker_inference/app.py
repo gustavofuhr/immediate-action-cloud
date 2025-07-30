@@ -23,22 +23,6 @@ gunicorn_logger = logging.getLogger("gunicorn.error")
 app.logger.handlers = gunicorn_logger.handlers
 app.logger.setLevel(gunicorn_logger.level)
 
-
-def load_image_from_file(file):
-    image = Image.open(file)
-    return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-
-def load_image_from_base64(encoded_data):
-    decoded_data = base64.b64decode(encoded_data)
-    np_data = np.frombuffer(decoded_data, np.uint8)
-    image = cv2.imdecode(np_data, cv2.IMREAD_COLOR)
-    return image
-
-def load_image_from_url(url):
-    response = requests.get(url)
-    image = Image.open(BytesIO(response.content))
-    return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-
 def load_image_pil_from_file(file):
     return Image.open(file).convert("RGB")
 
@@ -63,7 +47,8 @@ def list_models():
         res["available_models"].append({
             "name": key,
             "description": model_info.description,
-            "version": model_info.version
+            "version": model_info.version,
+            "default_parameters": model_info.model.get_default_parameters()
         })
     return jsonify(res), 200
 
@@ -90,18 +75,18 @@ def detect():
             return jsonify({'error': '`models` must be a list of model names'}), 400
 
         overall_start = time.time()
+        all_params = request.json.get("per_model_params", None)
         results = {}
 
         for model_name in models_to_run:
+            model_param = all_params.get(model_name, None) if all_params else None
             if model_name not in model_pipelines:
                 return jsonify({'error': f"Model '{model_name}' not found"}), 400
 
             model = model_pipelines[model_name].model
 
             model_start = time.time()
-            detections = model.run(image_pil, 
-                                threshold=request.json.get("threshold", 0.5),
-                                classes_to_detect=request.json.get("classes_to_detect", ["person"]))
+            detections = model.run(image_pil, params=model_param)
             model_elapsed = (time.time() - model_start) * 1000
 
             results[model_name] = {

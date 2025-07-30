@@ -21,7 +21,7 @@ class DFINE_Controller:
         if 'HGNetv2' in cfg.yaml_cfg:
             cfg.yaml_cfg['HGNetv2']['pretrained'] = False
 
-        checkpoint = torch.load(checkpoint_file, map_location='cpu')
+        checkpoint = torch.load(checkpoint_file, map_location='cpu', weights_only=False)
         if 'ema' in checkpoint:
             state = checkpoint['ema']['module']
         else:
