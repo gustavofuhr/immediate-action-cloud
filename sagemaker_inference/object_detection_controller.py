@@ -24,17 +24,17 @@ class ObjectDetectionController(ModelController):
         super().__init__(checkpoint_file, device)
         self.detector = DFINE_Controller(config_file, checkpoint_file, device)
 
-    def run(self, image_pil: Image.Image, param: dict = None) -> list[dict]:
+    def run(self, image_pil: Image.Image, params: dict = None) -> list[dict]:
         # DFINE_Controller works with COCO classes *integers*
-        if param is None:
-            param = self.get_default_parameters()
-        coco_classes_indices = [COCO_CLASS_TO_IDX[c] for c in param["classes_to_detect"] if c in COCO_CLASS_TO_IDX]
+        if params is None:
+            params = self.get_default_parameters()
+        coco_classes_indices = [COCO_CLASS_TO_IDX[c] for c in params["classes_to_detect"] if c in COCO_CLASS_TO_IDX]
 
-        detections = self.detector.run(image_pil, param["threshold"], coco_classes_indices)
+        detections = self.detector.run(image_pil, params["threshold"], coco_classes_indices)
         for d in detections:
             d['label'] = COCO_CLASSES[d['label']]
 
-        filtered_detections = self.filter_results(detections, param)
+        filtered_detections = self.filter_results(detections, params)
         return self._filter_duplicates(filtered_detections)
     
     def get_default_parameters(self) -> dict:

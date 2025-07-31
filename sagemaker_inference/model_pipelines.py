@@ -42,8 +42,9 @@ class ChainedModel:
                     for item in output:
                         if isinstance(item, dict) and "bbox" in item:
                             self._translate_bbox(item["bbox"], crop_box)
-
-                d[self.target_field] = output
+                
+                if output is not None:
+                    d[self.target_field] = output
             new_detections.append(d)
 
         return new_detections, n_calls
@@ -85,10 +86,16 @@ class ObjectDetectionMultiStagePipeline(ModelController):
         if params is None:
             params = self.get_default_parameters()
         detections = self.object_detector.run(image_pil, params)
+        
+        chained_model_params = params.get("chained_models", [])
+
         for ith, ch_model in enumerate(self.chained_models):
             print("Running chained model", ith + 1, "of", len(self.chained_models))
-            detections, n_calls = ch_model.run_model_for_each_detection(image_pil, detections, params["chained_models"][ith])
+
+            ch_params = chained_model_params[ith] if ith < len(chained_model_params) else None
+            detections, n_calls = ch_model.run_model_for_each_detection(image_pil, detections, ch_params)
             print(f"Total calls to chained model: {n_calls}")
+
         return detections
     
 ModelInfo = namedtuple("ModelInfo", ["model", "description", "version"])

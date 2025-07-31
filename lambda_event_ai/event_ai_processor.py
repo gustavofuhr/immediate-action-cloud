@@ -11,13 +11,7 @@ from amazon_kinesis_video_consumer_library.kinesis_video_streams_parser import K
 from amazon_kinesis_video_consumer_library.kinesis_video_fragment_processor import KvsFragementProcessor
 # from dfine_controller_ort import DFINEControllerORT
 from sagemaker_controller import SageMakerController
-from event_clip import EventClip, draw_boxes_on_frame
-
-
-CLASSES_TO_STORE = ['person', 'car_plate','bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
-                    'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat',
-                    'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe']
-    
+from event_clip import EventClip, draw_objects_on_frame, draw_ppes_on_frame, draw_plates_on_frame
 
 
 class StreamNotReadyError(Exception):
@@ -138,17 +132,26 @@ class EventAIProcessor:
             image_pil = Image.fromarray(frame)  
             
             frame_timestamp = self._compute_frame_timestamp(frag_producer_timestamp, n_frames_in_fragment, i, self.one_in_frames_ratio)
-
             image_pil.save(f"frame_{self.n_frames}.png")  # Save frame for debugging
-            model_prediction = self.sagemaker_inference.predict(image_pil, self.stream_ai_config["models"])
-            print(model_prediction)
-            exit(10)
+
+            model_predictions = self.sagemaker_inference.predict(image_pil, 
+                                                                self.stream_ai_config["models"], 
+                                                                self.stream_ai_config.get("per_model_params", None), 
+                                                                verbose=(self.n_frames == 0))
+            print(model_predictions)
+            image_pil = self._draw_predictions_on_frame(image_pil, model_predictions)
+            self.event_clip.add_frame(image_pil)
+            self.n_frames += 1
+
+            continue 
+
 
             # first general object detection
+
             filtered_detections, raw_detections = self.sagemaker_inference.detect_objects(image_pil, classes_to_detect=DETECTION_CLASS_COLORS.keys(), threshold=0.5, include_ppe_classification=True, verbose=(self.n_frames == 0))
             self._store_detections(self.stream_name, frame_timestamp, self.event_timestamp, frag_number, frag_producer_timestamp, frag_server_timestamp, raw_detections)            
             if filtered_detections:
-                image_pil = self._draw_detections_on_frame(image_pil, filtered_detections)
+                image_pil = self._draw_predictions_on_frame(image_pil, filtered_detections)
             
             ppe_detections = [det for det in filtered_detections if det['label'] == 'person' and 'ppe' in det]
             if ppe_detections:
@@ -182,11 +185,29 @@ class EventAIProcessor:
                 self._store_plates(self.stream_name, frame_timestamp, self.event_timestamp, frag_number, frag_producer_timestamp, frag_server_timestamp, raw_plates)
                 image_pil = self._draw_plates_on_frame(image_pil, filtered_plates)
             
-            self.event_clip.add_frame(image_pil)
-            self.n_frames += 1
+            
 
         self.n_fragments += 1
         self.last_fragment_timestamp = frag_producer_timestamp
+
+    def _draw_predictions_on_frame(self, frame_pil, model_predictions):
+        for model, detections in model_predictions.items():
+            if model.startswith("object_detection"):
+                frame_pil = draw_objects_on_frame(frame_pil, detections)
+                if "ppe" in model:
+                    ppe_detections = [det for det in detections if det['label'] == 'person' and 'ppe' in det]
+                    if ppe_detections:
+                        frame_pil = draw_ppes_on_frame(frame_pil, ppe_detections)
+                if "lpr" in model:
+                    plates = [det["license_plate"] for det in detections if "license_plate" in det]
+                    frame_pil = draw_plates_on_frame(frame_pil, plates)
+
+            elif model == "ppe_classification":
+                raise Exception("No way to draw PPE classification on a frame and you probably should not be calling this model directly.")
+                # frame_pil = draw_ppes_on_frame(frame_pil, detections)
+            elif model == "license_plate_recognition":
+                frame_pil = draw_plates_on_frame(frame_pil, detections)
+            
 
 
     def _compute_frame_timestamp(self, fragment_timestamp, n_frames_in_fragment, frame_index, one_in_frames_ratio):
@@ -299,64 +320,7 @@ class EventAIProcessor:
         """ Fetch KVS data endpoint """
         response = self.kvs_client.get_data_endpoint(StreamName=stream_name, APIName=api_name)
         return response['DataEndpoint']
-    
-    def _draw_ppes_on_frame(self, frame_pil, detections):
-        def label_fn(det):
-            label_map = {
-                "full": "PPE: full",
-                "upper": "PPE: upper",
-                "bottom": "PPE: bottom",
-                "noppe": "no PPE",
-                "na": "PPE: n/a"
-            }
-            if det["label"] == "person" and "ppe" in det:
-                level = det["ppe"]["ppe_level"]
-                return label_map.get(level, "PPE: unknown") + f" ({det['ppe']['confidence']:.2f})"
         
-        def color_fn(det):
-            color_map = {
-                "full": (0, 255, 0),  # green
-                "upper":  (225, 165, 0),  # orange
-                "bottom": (225, 165, 0),  # orange
-                "noppe": (210, 0, 0),  # dark red
-                "na": (128, 128, 128)  # gray
-            }
-            if det["label"] == "person" and "ppe" in det:
-                level = det["ppe"]["ppe_level"]
-                return color_map.get(level, (255, 0, 0))
-            
-        return draw_boxes_on_frame(
-            frame_pil,
-            detections,
-            label_fn=label_fn,
-            color_fn=color_fn,
-            font_size=14,
-            text_color=(255, 255, 255),
-            padding=2,
-            label_position="bottom",
-            invisible_box=True  # do not draw the bounding box for PPE
-        )
-        
-    
-    def _draw_detections_on_frame(self, frame_pil, detections):
-        return draw_boxes_on_frame(
-            frame_pil,
-            detections,
-            label_fn=lambda det: f"{det['label']}: {det['score']:.2f}",
-            color_fn=lambda d: DETECTION_CLASS_COLORS[d['label']],
-            font_size=18
-        )
-
-    def _draw_plates_on_frame(self, frame_pil, plates):
-        return draw_boxes_on_frame(
-            frame_pil,
-            plates,
-            label_fn=lambda d: f"{d['ocr_text']} | {d['score']:.1f} | OCR: {d['ocr_confidence']:.1f}",
-            color_fn=lambda d: DETECTION_CLASS_COLORS["plate"],
-            font_size=18,
-            label_position="bottom"
-        )
-    
     def _create_event_record(self, stream_name, event_timestamp, lambda_context, attempt_number):
         """ Create a record in the events table """
         start = time.time()

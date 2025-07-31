@@ -31,11 +31,11 @@ class PPEClassifierController(ModelController):
             "threshold": 0.7
         }
     
-    def filter_results(self, results: list[dict], params: dict) -> list[dict]:
+    def filter_results(self, result: dict, params: dict) -> dict:
         if params is None:
             params = self.get_default_parameters()
-        return [r for r in results if r['confidence'] >= params["threshold"]]
-
+        return result if result['confidence'] >= params["threshold"] else None
+    
     def run(self, image_pil: Image.Image, param : dict = None) -> list[dict]:
         image = self.transform(image_pil).unsqueeze(0).to(self.device)
         with torch.no_grad():
@@ -47,7 +47,7 @@ class PPEClassifierController(ModelController):
             "ppe_level": self.classes[predicted_class.item()], 
             "confidence": confidence.item()
         }
-        return self.filter_results([res], param)[0]
+        return self.filter_results(res, param)
 
 
 class LetterboxTransform:

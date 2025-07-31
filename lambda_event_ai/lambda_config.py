@@ -8,8 +8,16 @@ configs_table = dynamodb.Table("stream_configs")
 
 
 DEFAULT_AI_CONFIG = {
-    "debug": False,
-    "models": []
+    "debug_mode": "none",
+    "models": ["object_detection_then_ppe"],
+    "per_model_params": {
+        "object_detection_then_ppe": {
+            "threshold": 0.5,
+            "classes_to_detect": ['person', 'car_plate','bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
+                'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat',
+                'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe']
+        }
+    }
 }
 
 def convert_decimals(obj):

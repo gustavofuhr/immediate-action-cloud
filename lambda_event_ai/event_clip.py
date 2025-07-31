@@ -8,6 +8,7 @@ import numpy as np
 
 from PIL import ImageDraw, ImageFont
 
+
 DETECTION_CLASS_COLORS = {
     'person': (204, 0, 0),  
     'car': (0, 153, 0),  
@@ -25,6 +26,62 @@ DETECTION_CLASS_COLORS = {
     'plate': (230, 138, 0)
 }
 
+def draw_ppes_on_frame(self, frame_pil, detections):
+    def label_fn(det):
+        label_map = {
+            "full": "PPE: full",
+            "upper": "PPE: upper",
+            "bottom": "PPE: bottom",
+            "noppe": "no PPE",
+            "na": "PPE: n/a"
+        }
+        if det["label"] == "person" and "ppe" in det:
+            level = det["ppe"]["ppe_level"]
+            return label_map.get(level, "PPE: unknown") + f" ({det['ppe']['confidence']:.2f})"
+    
+    def color_fn(det):
+        color_map = {
+            "full": (0, 255, 0),  # green
+            "upper":  (225, 165, 0),  # orange
+            "bottom": (225, 165, 0),  # orange
+            "noppe": (210, 0, 0),  # dark red
+            "na": (128, 128, 128)  # gray
+        }
+        if det["label"] == "person" and "ppe" in det:
+            level = det["ppe"]["ppe_level"]
+            return color_map.get(level, (255, 0, 0))
+        
+    return draw_boxes_on_frame(
+        frame_pil,
+        detections,
+        label_fn=label_fn,
+        color_fn=color_fn,
+        font_size=14,
+        text_color=(255, 255, 255),
+        padding=2,
+        label_position="bottom",
+        invisible_box=True  # do not draw the bounding box for PPE
+    )
+    
+
+def draw_objects_on_frame(frame_pil, detections):
+    return draw_boxes_on_frame(
+        frame_pil,
+        detections,
+        label_fn=lambda det: f"{det['label']}: {det['score']:.2f}",
+        color_fn=lambda d: DETECTION_CLASS_COLORS[d['label']],
+        font_size=18
+    )
+
+def draw_plates_on_frame(frame_pil, plates):
+    return draw_boxes_on_frame(
+        frame_pil,
+        plates,
+        label_fn=lambda d: f"{d['ocr_text']} | {d['score']:.1f} | OCR: {d['ocr_confidence']:.1f}",
+        color_fn=lambda d: DETECTION_CLASS_COLORS["plate"],
+        font_size=18,
+        label_position="bottom"
+    )
 
 def draw_boxes_on_frame(
     frame_pil,

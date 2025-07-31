@@ -102,6 +102,7 @@ def detect():
         }), 200
 
     except Exception as e:
+        app.logger.error(f"Error processing request: {e}", exc_info=True)  
         return jsonify({'error': str(e)}), 500
 
 

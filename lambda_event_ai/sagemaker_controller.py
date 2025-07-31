@@ -14,7 +14,7 @@ class SageMakerController:
         self.sagemaker_runtime = boto3.client('sagemaker-runtime', region_name=aws_region)
         self.endpoint_name = endpoint_name
 
-    def predict(self, im_pil, models_and_configs, verbose: bool = False):
+    def predict(self, im_pil, models : list[str], per_model_params : dict = None, verbose: bool = False):
         """
         Call sagemaker endpoint for inference, might running multiple models at once.
 
@@ -24,30 +24,24 @@ class SageMakerController:
         # encode im_pil into base64
         image_base64 = self._encode_image_to_base64(im_pil)
         start_time = time.time()
-        
-        # TODO: this would need to be changed once we modify the sagemaker way of receiving parameters
-        model_list = [m["name"] for m in models_and_configs]
-        threshold = models_and_configs[0].get("threshold", 0.5)
-        classes_to_detect = models_and_configs[0].get("classes_to_detect", [])
 
-        response = self._make_aws_sagemaker_request(image_base64, models=model_list, classes_to_detect=classes_to_detect, threshold=threshold)
+        response = self._make_aws_sagemaker_request(image_base64, models=models, per_model_params=per_model_params)
         elapsed_time = time.time() - start_time
 
         if verbose:
-            print(f"Sagemaker inference time: {response['time_ms']:.2f} ms; Request time: {elapsed_time * 1000:.2f} ms")
+            print(f"Sagemaker total inference time: {response['total_time_ms']:.2f} ms; Request time: {elapsed_time * 1000:.2f} ms")
 
         return response
     
-    def _make_aws_sagemaker_request(self, image_base64 : str, models : list[str], classes_to_detect: list[str], threshold: float = 0.5):
-        print(f"Making AWS SageMaker request for models: {models}, classes_to_detect: {classes_to_detect}, threshold: {threshold}")
+    def _make_aws_sagemaker_request(self, image_base64 : str, models : list[str], per_model_params : dict = None):
+        # print(f"Making AWS SageMaker request for models: {models}, per_model_params: {per_model_params}")
         response = self.sagemaker_runtime.invoke_endpoint(
             EndpointName=self.endpoint_name,
             ContentType="application/json",
             Body=json.dumps({
                 "image_base64": image_base64,
                 "models": models,
-                "classes_to_detect": classes_to_detect,
-                "threshold": threshold
+                "per_model_params": per_model_params if per_model_params else {}
             }),
         )
         return json.loads(response["Body"].read().decode())

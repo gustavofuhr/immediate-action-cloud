@@ -38,13 +38,13 @@ class ModelController:
         """
         raise NotImplementedError("This method should be implemented by subclasses.")
 
-    def run(self, image_pil: Image.Image, parameters : dict = None) -> list[dict]:
+    def run(self, image_pil: Image.Image, params : dict = None) -> list[dict]:
         """
         Run the model pipeline on the input image.
 
         Args:
             image (Image.Image): Input image in PIL format.
-            parameters (dict): Additional parameters for the model run, such as threshold and classes to detect.
+            params (dict): Additional parameters for the model run, such as threshold and classes to detect.
 
         Returns:
             list[dict]: List of detection results, each containing bounding box, label, score, 
