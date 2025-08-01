@@ -44,10 +44,10 @@ class ObjectDetectionController(ModelController):
         }
     
     def filter_results(self, results: list[dict], params: dict) -> list[dict]:
-        return [r for r in results if r['score'] >= params["threshold"]] # classes are already filtered in run()
+        return [r for r in results if r['confidence'] >= params["threshold"]] # classes are already filtered in run()
 
     def _filter_duplicates(self, detections: list[dict], iou_threshold: float = 0.99, filter_classes: set[str] = {"car", "truck", "bus"}) -> list[dict]:
-        detections = sorted(detections, key=lambda d: d["score"], reverse=True)
+        detections = sorted(detections, key=lambda d: d["confidence"], reverse=True)
 
         kept = []
         for i, det in enumerate(detections):

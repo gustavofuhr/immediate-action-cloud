@@ -1,9 +1,10 @@
 import time
 from decimal import Decimal
+import json
 
 import boto3
 
-dynamodb = boto3.resource("dynamodb")
+dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
 configs_table = dynamodb.Table("stream_configs")
 
 
@@ -46,4 +47,5 @@ def get_ai_config(device_id):
     config = convert_decimals(config)  
     elapsed = (time.time() - start) * 1000
     print(f"[INFO] Fetched ai_config for '{device_id}' in {elapsed:.2f} ms")
+    print(json.dumps(config, indent=4))
     return config

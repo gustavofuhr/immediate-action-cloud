@@ -41,6 +41,7 @@ __status__ = "Development"
 __copyright__ = "Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved."
 __author__ = "Dean Colcott <https://www.linkedin.com/in/deancolcott/>"
 
+import sys
 import timeit
 import logging
 from threading import Thread
@@ -222,6 +223,6 @@ class KvsConsumerLibrary(Thread):
 
         except Exception as err:
             # Pass any exceptions to exception callback.
-            self.on_read_stream_exception(self.stream_name, err)
+            self.on_read_stream_exception(self.stream_name, err, sys.exc_info())
         
 

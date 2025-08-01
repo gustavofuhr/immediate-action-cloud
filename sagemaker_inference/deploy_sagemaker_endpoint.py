@@ -7,7 +7,7 @@ GPU = True
 OBJECT_DETECTION_MODEL = "dfine_x_obj2coco"
 AWS_REGION = "eu-west-1"
 
-IMAGE_NAME = "sagemaker_inference_server_test"
+IMAGE_NAME = "sagemaker_inference_server"
 ECR_REPO_NAME = IMAGE_NAME
 
 obj_models = {

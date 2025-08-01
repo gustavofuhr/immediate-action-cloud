@@ -26,7 +26,7 @@ DETECTION_CLASS_COLORS = {
     'plate': (230, 138, 0)
 }
 
-def draw_ppes_on_frame(self, frame_pil, detections):
+def draw_ppes_on_frame(frame_pil, detections):
     def label_fn(det):
         label_map = {
             "full": "PPE: full",
@@ -65,10 +65,12 @@ def draw_ppes_on_frame(self, frame_pil, detections):
     
 
 def draw_objects_on_frame(frame_pil, detections):
+    # filter off detections not in the color map
+    detections = [det for det in detections if det['label'] in DETECTION_CLASS_COLORS]
     return draw_boxes_on_frame(
         frame_pil,
         detections,
-        label_fn=lambda det: f"{det['label']}: {det['score']:.2f}",
+        label_fn=lambda det: f"{det['label']}: {det['confidence']:.2f}",
         color_fn=lambda d: DETECTION_CLASS_COLORS[d['label']],
         font_size=18
     )
@@ -77,7 +79,7 @@ def draw_plates_on_frame(frame_pil, plates):
     return draw_boxes_on_frame(
         frame_pil,
         plates,
-        label_fn=lambda d: f"{d['ocr_text']} | {d['score']:.1f} | OCR: {d['ocr_confidence']:.1f}",
+        label_fn=lambda d: f"{d['ocr_text']} | {d['confidence']:.1f} | OCR: {d['ocr_confidence']:.1f}",
         color_fn=lambda d: DETECTION_CLASS_COLORS["plate"],
         font_size=18,
         label_position="bottom"

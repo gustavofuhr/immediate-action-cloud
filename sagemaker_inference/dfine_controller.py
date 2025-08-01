@@ -65,7 +65,7 @@ class DFINE_Controller:
                         'top_left': {'x': filtered_boxes[i][0].item(), 'y': filtered_boxes[i][1].item()},
                         'bottom_right': {'x': filtered_boxes[i][2].item(), 'y': filtered_boxes[i][3].item()}
                     },
-                    'score': filtered_scores[i].item()
+                    'confidence': filtered_scores[i].item()
                 })
         return detections
 

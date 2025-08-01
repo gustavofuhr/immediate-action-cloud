@@ -31,7 +31,7 @@ class LPR_Controller(ModelController):
         if params is None:
             params = self.get_default_parameters()
         return [
-            r for r in results if r['score'] >= params['threshold'] and \
+            r for r in results if r['confidence'] >= params['threshold'] and \
                 r['ocr_confidence'] >= params['ocr_confidence_threshold']
         ]
 
@@ -57,7 +57,7 @@ class LPR_Controller(ModelController):
             detections.append({
                 "bbox": bbox,
                 "label": "license_plate",  # could also be 0 or a string depending on your handling
-                "score": r.detection.confidence,
+                "confidence": r.detection.confidence,
                 "ocr_text": r.ocr.text,
                 "ocr_confidence": r.ocr.confidence
             })

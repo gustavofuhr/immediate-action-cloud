@@ -47,7 +47,7 @@ class ModelController:
             params (dict): Additional parameters for the model run, such as threshold and classes to detect.
 
         Returns:
-            list[dict]: List of detection results, each containing bounding box, label, score, 
+            list[dict]: List of detection results, each containing bounding box, label, confidence, 
                                     and other relevant information.
         """
         raise NotImplementedError("This method should be implemented by subclasses.")

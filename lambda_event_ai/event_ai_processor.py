@@ -3,7 +3,7 @@ from datetime import timedelta, datetime, timezone
 from decimal import Decimal
 from collections import defaultdict
 
-
+import logging
 import boto3
 from PIL import Image, ImageDraw, ImageFont
 
@@ -13,6 +13,8 @@ from amazon_kinesis_video_consumer_library.kinesis_video_fragment_processor impo
 from sagemaker_controller import SageMakerController
 from event_clip import EventClip, draw_objects_on_frame, draw_ppes_on_frame, draw_plates_on_frame
 
+
+logger = logging.getLogger(__name__)
 
 class StreamNotReadyError(Exception):
     """ Exception raised when the KVS stream is not ready """
@@ -29,15 +31,14 @@ class EventAIProcessor:
         self.session = boto3.Session(region_name=aws_region) 
         self.kvs_client = self.session.client("kinesisvideo")        
         
-        # DEBUG: TODO: WARNING: This is a temporary solution for testing
-        self.sagemaker_inference = SageMakerController(aws_region, "sagemaker-inference-server-test-endpoint")
+        self.sagemaker_inference = SageMakerController(aws_region, "sagemaker-inference-server-endpoint")
 
         self.event_clip = EventClip(aws_region, s3_bucket)
 
         self.dynamodb = boto3.resource("dynamodb", region_name=aws_region)
         self.event_table = self.dynamodb.Table("events")
-        self.event_detections_table = self.dynamodb.Table("event_detections")
-        self.event_plate_recognitions_table = self.dynamodb.Table("event_plate_recognitions")
+        self.event_predictions_table = self.dynamodb.Table("event_predictions")
+        
         self.last_fragment_timestamp = None
         self.stream_exception = None
 
@@ -91,9 +92,11 @@ class EventAIProcessor:
                                     self.on_stream_read_exception)
         self.n_fragments = 0
         self.n_frames = 0
+        
         self.seen_classes = set()
         self.seen_plates = set()
-        self.detection_stats = defaultdict(lambda: {
+
+        self.object_detection_stats = defaultdict(lambda: {
             "total_confidence": 0.0,
             "max_confidence": 0.0,
             "n_frames": 0
@@ -129,69 +132,41 @@ class EventAIProcessor:
         ndarray_frames, n_frames_in_fragment = self.kvs_fragment_processor.get_frames_as_ndarray(fragment_bytes, self.one_in_frames_ratio)
         if (self.n_frames == 0): print(f"Will get one in {self.one_in_frames_ratio} frames, total of {len(ndarray_frames)} from fragment with {n_frames_in_fragment} frames")
         for i, frame in enumerate(ndarray_frames):
-            image_pil = Image.fromarray(frame)  
+            image_pil = Image.fromarray(frame) # since the frame is read using pyav, it is in RGB format 
             
+            # image_pil.save("frame_to_send.png", format="PNG")  # Save the frame for debugging
             frame_timestamp = self._compute_frame_timestamp(frag_producer_timestamp, n_frames_in_fragment, i, self.one_in_frames_ratio)
-            image_pil.save(f"frame_{self.n_frames}.png")  # Save frame for debugging
 
             model_predictions = self.sagemaker_inference.predict(image_pil, 
                                                                 self.stream_ai_config["models"], 
                                                                 self.stream_ai_config.get("per_model_params", None), 
                                                                 verbose=(self.n_frames == 0))
-            print(model_predictions)
-            image_pil = self._draw_predictions_on_frame(image_pil, model_predictions)
+            # print(model_predictions)
+            image_pil = self._draw_predictions_on_frame(image_pil, self.stream_ai_config["models"], model_predictions["results"])
+            
             self.event_clip.add_frame(image_pil)
             self.n_frames += 1
 
-            continue 
+            self._store_predictions(
+                device_id=self.stream_name,
+                frame_timestamp=frame_timestamp,
+                event_timestamp=self.event_timestamp,
+                fragment_number=frag_number,
+                fragment_producer_timestamp=frag_producer_timestamp,
+                fragment_server_timestamp=frag_server_timestamp,
+                predictions=model_predictions
+            )
 
+            self._update_seen_classes_and_stats(self.stream_ai_config["models"], model_predictions["results"])
 
-            # first general object detection
-
-            filtered_detections, raw_detections = self.sagemaker_inference.detect_objects(image_pil, classes_to_detect=DETECTION_CLASS_COLORS.keys(), threshold=0.5, include_ppe_classification=True, verbose=(self.n_frames == 0))
-            self._store_detections(self.stream_name, frame_timestamp, self.event_timestamp, frag_number, frag_producer_timestamp, frag_server_timestamp, raw_detections)            
-            if filtered_detections:
-                image_pil = self._draw_predictions_on_frame(image_pil, filtered_detections)
-            
-            ppe_detections = [det for det in filtered_detections if det['label'] == 'person' and 'ppe' in det]
-            if ppe_detections:
-                image_pil = self._draw_ppes_on_frame(image_pil, ppe_detections)
-
-            for det in filtered_detections:
-                self._update_detection_stats(det)
-                self.seen_classes.add(det['label'])
-                if det['label'] == 'person' and "ppe" in det:
-                    ppe_label = "person_ppe_" + det["ppe"]["ppe_level"]
-                    self.seen_classes.add(ppe_label)
-                    self._update_detection_stats({
-                        'label': ppe_label,
-                        'score': det["ppe"]["confidence"]
-                    })
-
-            # license plate recognition
-            filtered_plates, raw_plates = self.detector.detect_plates(image_pil, threshold=0.7, ocr_theshold=0.7, verbose=(self.n_frames == 0))
-            for plate in filtered_plates:
-                self._update_plate_stats(plate)
-                self.seen_plates.add(plate['ocr_text'])
-
-                # a plate is also an object
-                self.seen_classes.add("plate")
-                self._update_detection_stats({
-                    'label': 'car_plate',
-                    'score': plate['score']
-                })
-
-            if filtered_plates:
-                self._store_plates(self.stream_name, frame_timestamp, self.event_timestamp, frag_number, frag_producer_timestamp, frag_server_timestamp, raw_plates)
-                image_pil = self._draw_plates_on_frame(image_pil, filtered_plates)
-            
             
 
         self.n_fragments += 1
         self.last_fragment_timestamp = frag_producer_timestamp
 
-    def _draw_predictions_on_frame(self, frame_pil, model_predictions):
-        for model, detections in model_predictions.items():
+    def _draw_predictions_on_frame(self, frame_pil, models_to_draw, model_predictions):
+        for model in models_to_draw:
+            detections = model_predictions[model].get("detections", [])
             if model.startswith("object_detection"):
                 frame_pil = draw_objects_on_frame(frame_pil, detections)
                 if "ppe" in model:
@@ -199,7 +174,12 @@ class EventAIProcessor:
                     if ppe_detections:
                         frame_pil = draw_ppes_on_frame(frame_pil, ppe_detections)
                 if "lpr" in model:
-                    plates = [det["license_plate"] for det in detections if "license_plate" in det]
+                    plates = [
+                        plate
+                        for det in detections
+                        if "license_plate" in det and len(det["license_plate"]) > 0
+                        for plate in det["license_plate"]
+                    ]
                     frame_pil = draw_plates_on_frame(frame_pil, plates)
 
             elif model == "ppe_classification":
@@ -207,7 +187,64 @@ class EventAIProcessor:
                 # frame_pil = draw_ppes_on_frame(frame_pil, detections)
             elif model == "license_plate_recognition":
                 frame_pil = draw_plates_on_frame(frame_pil, detections)
-            
+
+        return frame_pil
+    
+    def _store_predictions(self, device_id, frame_timestamp, event_timestamp, fragment_number, fragment_producer_timestamp, fragment_server_timestamp, predictions):
+        item = {
+            "device_id": device_id,
+            "frame_timestamp": frame_timestamp.isoformat(),
+            "event_timestamp": event_timestamp.isoformat(),
+            "fragment_number": fragment_number,
+            "fragment_producer_timestamp": fragment_producer_timestamp.isoformat(),
+            "fragment_server_timestamp": fragment_server_timestamp.isoformat(),
+            "predictions": self._convert_floats_to_decimals(predictions),
+        }
+        try:
+            self.event_predictions_table.put_item(Item=item)
+        except Exception as e:
+            print(f"Error storing detections in DynamoDB: {e}")
+
+
+    def _update_seen_classes_and_stats(self, models, predictions):
+        for model in models:
+            detections = predictions[model].get("detections", [])
+            self.seen_classes.update([det['label'] for det in detections])
+            for det in detections:
+                self._update_detection_stats(det)
+
+            if model.startswith("object_detection_then"):
+                for det in detections:
+                    if "ppe" in det: # also conside the person with PPE a different object
+                        ppe_det = det.copy()
+                        ppe_det['label'] = "person_ppe_" + det["ppe"]["ppe_level"]
+                        ppe_det['confidence'] = det["confidence"] * det["ppe"]["confidence"]
+                        self.seen_classes.add(ppe_det['label'])
+                        self._update_detection_stats(ppe_det)
+                    elif "license_plate" in det and len(det["license_plate"]) > 0:
+                        self.seen_classes.add("car_plate")
+                        # if there are multiple plates, we will add them all
+                        for plate in det["license_plate"]:
+                            if plate["ocr_text"] not in self.seen_plates:
+                                self.seen_plates.add(plate["ocr_text"])               
+                            self._update_plate_stats(plate)
+        
+
+    def _update_detection_stats(self, det):
+        cls, confidence = det['label'], det['confidence']
+        stats = self.object_detection_stats[cls]
+        stats["total_confidence"] += confidence
+        stats["max_confidence"] = max(stats["max_confidence"], confidence)
+        stats["n_frames"] += 1
+
+    def _update_plate_stats(self, plate):
+        text = plate['ocr_text']
+        stats = self.plate_recognition_stats[text]
+        stats["total_confidence"] += plate['confidence']
+        stats["max_confidence"] = max(stats["max_confidence"], plate['confidence'])
+        stats["n_frames"] += 1
+        stats["ocr_total_confidence"] += plate['ocr_confidence']
+        stats["ocr_max_confidence"] = max(stats["ocr_max_confidence"], plate['ocr_confidence'])
 
 
     def _compute_frame_timestamp(self, fragment_timestamp, n_frames_in_fragment, frame_index, one_in_frames_ratio):
@@ -221,24 +258,6 @@ class EventAIProcessor:
         original_frame_index = frame_index * one_in_frames_ratio
         frame_timestamp = fragment_timestamp + timedelta(seconds=frame_duration * original_frame_index)
         return frame_timestamp
-
-    def _update_plate_stats(self, plate):
-        text = plate['ocr_text']
-        if text not in self.seen_plates:
-            self.seen_plates.add(text)
-        stats = self.plate_recognition_stats[text]
-        stats["total_confidence"] += plate['score']
-        stats["max_confidence"] = max(stats["max_confidence"], plate['score'])
-        stats["n_frames"] += 1
-        stats["ocr_total_confidence"] += plate['ocr_confidence']
-        stats["ocr_max_confidence"] = max(stats["ocr_max_confidence"], plate['ocr_confidence'])
-
-    def _update_detection_stats(self, det):
-        cls, score = det['label'], det['score']
-        stats = self.detection_stats[cls]
-        stats["total_confidence"] += score
-        stats["max_confidence"] = max(stats["max_confidence"], score)
-        stats["n_frames"] += 1
 
 
     def on_stream_read_complete(self, stream):
@@ -255,10 +274,10 @@ class EventAIProcessor:
             elapsed_ms = (time.time() - start_time) * 1000
             print(f"send_clip_to_s3 took {elapsed_ms:.2f} ms")
 
-            # Finalize detection_stats (compute average)
-            final_detection_stats = {}
-            for cls, stats in self.detection_stats.items():
-                final_detection_stats[cls] = {
+            # Finalize object_detection_stats (compute average)
+            final_object_detection_stats = {}
+            for cls, stats in self.object_detection_stats.items():
+                final_object_detection_stats[cls] = {
                     "avg_confidence": round(stats["total_confidence"] / stats["n_frames"], 4),
                     "max_confidence": round(stats["max_confidence"], 4),
                     "n_frames": stats["n_frames"]
@@ -284,8 +303,8 @@ class EventAIProcessor:
             print(f"  Video S3 key: {self.event_clip_filepath}")
             print(f"  Seen classes: {list(self.seen_classes)}")
             print(f"  Seen plates: {list(self.seen_plates)}")
-            print(f"  Detection stats:")
-            for cls, stats in final_detection_stats.items():
+            print(f"  Object detection stats:")
+            for cls, stats in final_object_detection_stats.items():
                 print(f"    - {cls}: avg_conf={stats['avg_confidence']}, max_conf={stats['max_confidence']}, n_frames={stats['n_frames']}")
             print(f"  Plate detection stats:")
             for plate, stats in final_plate_stats.items():
@@ -302,13 +321,13 @@ class EventAIProcessor:
                 video_key=self.event_clip_filepath,
                 seen_classes=list(self.seen_classes),
                 seen_plates=list(self.seen_plates),
-                detection_stats=final_detection_stats,
+                detection_stats=final_object_detection_stats,
                 plate_recognition_stats=final_plate_stats
             )
 
-    def on_stream_read_exception(self, stream_name, error):
-        print(f'Error on stream: {stream_name}')
-        print(repr(error))
+    def on_stream_read_exception(self, stream_name, error, exc_info=None):
+        logger.error(f'Error on stream: {stream_name}', exc_info=exc_info)
+
         # if error is `pyav` can not handle the given uri assumes stream is not ready yet and tries again later
         if isinstance(error, OSError) and str(error) == '`pyav` can not handle the given uri.':
             self.stream_exception = StreamNotReadyError("KVS stream is not ready: PyAV cannot handle URI")
@@ -393,55 +412,55 @@ class EventAIProcessor:
                 return obj
 
     
-    def _store_detections(self, 
-                          device_id: str, 
-                          frame_timestamp: datetime, 
-                          event_timestamp: datetime,
-                          fragment_number: int,
-                          fragment_producer_timestamp: datetime,
-                          fragment_server_timestamp: datetime, 
-                          detections: list):
+    # def _store_detections(self, 
+    #                       device_id: str, 
+    #                       frame_timestamp: datetime, 
+    #                       event_timestamp: datetime,
+    #                       fragment_number: int,
+    #                       fragment_producer_timestamp: datetime,
+    #                       fragment_server_timestamp: datetime, 
+    #                       detections: list):
 
 
-        detections_to_store = [det for det in detections if det['label'] in CLASSES_TO_STORE and det['score'] >= 0.5]
-        item = {
-            "device_id": device_id,
-            "frame_timestamp": frame_timestamp.isoformat(),
-            "event_timestamp": event_timestamp.isoformat(),
-            "fragment_number": fragment_number,
-            "fragment_producer_timestamp": fragment_producer_timestamp.isoformat(),
-            "fragment_server_timestamp": fragment_server_timestamp.isoformat(),
-            "detections": self._convert_floats_to_decimals(detections_to_store),
-        }
-        self.seen_classes.update([det['label'] for det in detections_to_store])
-        try:
-            self.event_detections_table.put_item(Item=item)
-            # print(f"Stored detection results for {device_id} at {frame_timestamp}")
-        except Exception as e:
-            print(f"Error storing detections in DynamoDB: {e}")
+    #     detections_to_store = [det for det in detections if det['label'] in CLASSES_TO_STORE and det['confidence'] >= 0.5]
+    #     item = {
+    #         "device_id": device_id,
+    #         "frame_timestamp": frame_timestamp.isoformat(),
+    #         "event_timestamp": event_timestamp.isoformat(),
+    #         "fragment_number": fragment_number,
+    #         "fragment_producer_timestamp": fragment_producer_timestamp.isoformat(),
+    #         "fragment_server_timestamp": fragment_server_timestamp.isoformat(),
+    #         "detections": self._convert_floats_to_decimals(detections_to_store),
+    #     }
+    #     self.seen_classes.update([det['label'] for det in detections_to_store])
+    #     try:
+    #         self.event_detections_table.put_item(Item=item)
+    #         # print(f"Stored detection results for {device_id} at {frame_timestamp}")
+    #     except Exception as e:
+    #         print(f"Error storing detections in DynamoDB: {e}")
 
 
         
-    def _store_plates(self, 
-                          device_id: str, 
-                          frame_timestamp: datetime, 
-                          event_timestamp: datetime,
-                          fragment_number: int,
-                          fragment_producer_timestamp: datetime,
-                          fragment_server_timestamp: datetime, 
-                          plates: list):
+    # def _store_plates(self, 
+    #                       device_id: str, 
+    #                       frame_timestamp: datetime, 
+    #                       event_timestamp: datetime,
+    #                       fragment_number: int,
+    #                       fragment_producer_timestamp: datetime,
+    #                       fragment_server_timestamp: datetime, 
+    #                       plates: list):
 
 
-        item = {
-            "device_id": device_id,
-            "frame_timestamp": frame_timestamp.isoformat(),
-            "event_timestamp": event_timestamp.isoformat(),
-            "fragment_number": fragment_number,
-            "fragment_producer_timestamp": fragment_producer_timestamp.isoformat(),
-            "fragment_server_timestamp": fragment_server_timestamp.isoformat(),
-            "plates": self._convert_floats_to_decimals(plates),
-        }
-        try:
-            self.event_plate_recognitions_table.put_item(Item=item)
-        except Exception as e:
-            print(f"Error storing plates in DynamoDB: {e}")
+    #     item = {
+    #         "device_id": device_id,
+    #         "frame_timestamp": frame_timestamp.isoformat(),
+    #         "event_timestamp": event_timestamp.isoformat(),
+    #         "fragment_number": fragment_number,
+    #         "fragment_producer_timestamp": fragment_producer_timestamp.isoformat(),
+    #         "fragment_server_timestamp": fragment_server_timestamp.isoformat(),
+    #         "plates": self._convert_floats_to_decimals(plates),
+    #     }
+    #     try:
+    #         self.event_plate_recognitions_table.put_item(Item=item)
+    #     except Exception as e:
+    #         print(f"Error storing plates in DynamoDB: {e}")

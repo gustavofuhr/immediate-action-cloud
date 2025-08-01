@@ -24,9 +24,9 @@ class ChainedModel:
         self.filter_classes = filter_classes
         self.target_field = target_field
 
-    def run_model_for_each_detection(self, image_pil: Image.Image, detections: list[dict], threshold: float) -> list[dict]:
+    def run_model_for_each_detection(self, image_pil: Image.Image, detections: list[dict], threshold: float):
         if not detections:
-            return []
+            return [], 0
 
         new_detections = []
         n_calls = 0
