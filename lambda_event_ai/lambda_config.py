@@ -1,5 +1,6 @@
 import time
 from decimal import Decimal
+from functools import wraps
 import json
 
 import boto3
@@ -21,6 +22,22 @@ DEFAULT_AI_CONFIG = {
     }
 }
 
+def ttl_cache(seconds=30):
+    def decorator(func):
+        cache = {}
+        @wraps(func)
+        def wrapper(*args):
+            now = time.time()
+            if args in cache:
+                result, ts = cache[args]
+                if now - ts < seconds:
+                    return result
+            result = func(*args)
+            cache[args] = (result, now)
+            return result
+        return wrapper
+    return decorator
+
 def convert_decimals(obj):
     """
     Recursively converts Decimal objects to float in dicts/lists.
@@ -36,16 +53,23 @@ def convert_decimals(obj):
 
 
 def get_ai_config(device_id):
-    start = time.time()
     try:
         response = configs_table.get_item(Key={"device_id": device_id, "config_type": "ai_config"})
         config = response.get("Item", {}).get("config", DEFAULT_AI_CONFIG)
     except Exception as e:
-        print(f"[WARNING] Failed to get ai_config for {device_id}: {e}")
         config = DEFAULT_AI_CONFIG
 
     config = convert_decimals(config)  
-    elapsed = (time.time() - start) * 1000
-    print(f"[INFO] Fetched ai_config for '{device_id}' in {elapsed:.2f} ms")
     print(json.dumps(config, indent=4))
+    return config
+
+@ttl_cache(seconds=30)
+def get_alarm_config(device_id):
+    try:
+        response = configs_table.get_item(Key={"device_id": device_id, "config_type": "alarm_config"})
+        config = response.get("Item", {}).get("config", {})
+    except Exception as e:
+        return None
+
+    config = convert_decimals(config)  
     return config

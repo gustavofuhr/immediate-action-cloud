@@ -12,9 +12,10 @@ from amazon_kinesis_video_consumer_library.kinesis_video_fragment_processor impo
 # from dfine_controller_ort import DFINEControllerORT
 from sagemaker_controller import SageMakerController
 from event_clip import EventClip, draw_objects_on_frame, draw_ppes_on_frame, draw_plates_on_frame
-
+from alarm_controller import AlarmController
 
 logger = logging.getLogger(__name__)
+alarm_controller = AlarmController()
 
 class StreamNotReadyError(Exception):
     """ Exception raised when the KVS stream is not ready """
@@ -41,6 +42,8 @@ class EventAIProcessor:
         
         self.last_fragment_timestamp = None
         self.stream_exception = None
+
+        self.triggered_alarm = False
 
     def process_frames(self, stream_name : str, 
                        event_timestamp : datetime,
@@ -111,7 +114,7 @@ class EventAIProcessor:
         self.stream.start()
 
     
-    def on_fragment_arrived(self, stream_name, fragment_bytes, fragment_dom, fragment_receive_duration):
+    def on_fragment_arrived(self, stream_object, fragment_bytes, fragment_dom, fragment_receive_duration):
         """ Called when a new KVS fragment arrives """
 
         frag_tags = self.kvs_fragment_processor.get_fragment_tags(fragment_dom)
@@ -137,16 +140,24 @@ class EventAIProcessor:
             # image_pil.save("frame_to_send.png", format="PNG")  # Save the frame for debugging
             frame_timestamp = self._compute_frame_timestamp(frag_producer_timestamp, n_frames_in_fragment, i, self.one_in_frames_ratio)
 
+            # run predictions, whichever is configured for this stream
             model_predictions = self.sagemaker_inference.predict(image_pil, 
                                                                 self.stream_ai_config["models"], 
                                                                 self.stream_ai_config.get("per_model_params", None), 
                                                                 verbose=(self.n_frames == 0))
-            # print(model_predictions)
+            # draw predictions on the frame for video/alarms
             image_pil = self._draw_predictions_on_frame(image_pil, self.stream_ai_config["models"], model_predictions["results"])
             
+            # add the frame to the event clip
             self.event_clip.add_frame(image_pil)
             self.n_frames += 1
 
+            # check if an alarm must be send
+            if not self.triggered_alarm:
+                self.triggered_alarm = alarm_controller.check_alarm(self.stream_name, model_predictions["results"], 
+                                                                                        frame_timestamp, image_pil, verbose=(self.n_frames == 0))
+
+            # store the predictions in DynamoDB
             self._store_predictions(
                 device_id=self.stream_name,
                 frame_timestamp=frame_timestamp,
@@ -157,6 +168,7 @@ class EventAIProcessor:
                 predictions=model_predictions
             )
 
+            # update the seen classes and stats (average confidence, max confidence, etc.)
             self._update_seen_classes_and_stats(self.stream_ai_config["models"], model_predictions["results"])
 
             
@@ -411,56 +423,3 @@ class EventAIProcessor:
             else:
                 return obj
 
-    
-    # def _store_detections(self, 
-    #                       device_id: str, 
-    #                       frame_timestamp: datetime, 
-    #                       event_timestamp: datetime,
-    #                       fragment_number: int,
-    #                       fragment_producer_timestamp: datetime,
-    #                       fragment_server_timestamp: datetime, 
-    #                       detections: list):
-
-
-    #     detections_to_store = [det for det in detections if det['label'] in CLASSES_TO_STORE and det['confidence'] >= 0.5]
-    #     item = {
-    #         "device_id": device_id,
-    #         "frame_timestamp": frame_timestamp.isoformat(),
-    #         "event_timestamp": event_timestamp.isoformat(),
-    #         "fragment_number": fragment_number,
-    #         "fragment_producer_timestamp": fragment_producer_timestamp.isoformat(),
-    #         "fragment_server_timestamp": fragment_server_timestamp.isoformat(),
-    #         "detections": self._convert_floats_to_decimals(detections_to_store),
-    #     }
-    #     self.seen_classes.update([det['label'] for det in detections_to_store])
-    #     try:
-    #         self.event_detections_table.put_item(Item=item)
-    #         # print(f"Stored detection results for {device_id} at {frame_timestamp}")
-    #     except Exception as e:
-    #         print(f"Error storing detections in DynamoDB: {e}")
-
-
-        
-    # def _store_plates(self, 
-    #                       device_id: str, 
-    #                       frame_timestamp: datetime, 
-    #                       event_timestamp: datetime,
-    #                       fragment_number: int,
-    #                       fragment_producer_timestamp: datetime,
-    #                       fragment_server_timestamp: datetime, 
-    #                       plates: list):
-
-
-    #     item = {
-    #         "device_id": device_id,
-    #         "frame_timestamp": frame_timestamp.isoformat(),
-    #         "event_timestamp": event_timestamp.isoformat(),
-    #         "fragment_number": fragment_number,
-    #         "fragment_producer_timestamp": fragment_producer_timestamp.isoformat(),
-    #         "fragment_server_timestamp": fragment_server_timestamp.isoformat(),
-    #         "plates": self._convert_floats_to_decimals(plates),
-    #     }
-    #     try:
-    #         self.event_plate_recognitions_table.put_item(Item=item)
-    #     except Exception as e:
-    #         print(f"Error storing plates in DynamoDB: {e}")
