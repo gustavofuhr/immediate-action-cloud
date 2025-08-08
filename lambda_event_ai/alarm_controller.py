@@ -107,8 +107,9 @@ class AlarmController:
 
         if self.twilio_client is None:
             from twilio.rest import Client
-            account_sid = 'AC25c10375466eea035619587010999fdf'
-            auth_token = '62ff3ca6549deed92f749e8c612fa2ee'
+            # TODO: define if is going to use twilio or meta
+            account_sid = ''
+            auth_token = ''
         
             self.twilio_client = Client(account_sid, auth_token)
 
