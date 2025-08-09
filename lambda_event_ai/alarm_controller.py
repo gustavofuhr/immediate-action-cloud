@@ -1,8 +1,9 @@
 import time
-import io
 from datetime import datetime
 import json
 from io import BytesIO
+from threading import Thread
+import traceback
 
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -12,8 +13,6 @@ import boto3
 from PIL import Image
 
 from lambda_config import get_alarm_config
-
-sns = boto3.client('sns')
 
 
 EMAIL_PLAIN_TEXT = """
@@ -39,6 +38,18 @@ EMAIL_HTML = """
 </html>
 """
 
+def _run_on_background(fn, *args, **kwargs):
+    def _wrapped():
+        try:
+            fn(*args, **kwargs)
+        except Exception as e:
+            print("[ERROR] Background task failed:", e)
+            traceback.print_exc()
+    t = Thread(target=_wrapped, daemon=True)
+    t.start()
+    return t
+
+
 class AlarmController:
 
     def __init__(self):
@@ -46,6 +57,7 @@ class AlarmController:
         self.bucket_name = "immediate-action-alarm-snapshots"
         # self.sns = boto3.client('sns')
         self.ses = boto3.client('ses', region_name='eu-west-1')
+        self.twilio_client = None
 
 
     def send_text_email_alarm(self, device_id : str, object_class : str, confidence : float, alarm_formatted_time : str, image_url : str):
@@ -57,15 +69,19 @@ class AlarmController:
             ),
             Subject="Event Alert! {0}".format(device_id),
         )
-
-    def send_email_alarm(self, device_id : str, object_class : str, confidence : float, alarm_formatted_time : str, 
-                                image_pil : Image.Image, to_addrs : list[str], from_addr : str):
-        max_w, max_h = 1280, 720
+    
+    def _resize_image_to_send(self, image_pil: Image.Image, max_w: int = 1280, max_h: int = 720) -> Image.Image:
         w, h = image_pil.size
         if w > max_w or h > max_h:
             image_pil = image_pil.copy()
             image_pil.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
 
+        return image_pil
+
+    def send_email_alarm(self, device_id : str, object_class : str, confidence : float, alarm_formatted_time : str, 
+                                image_pil : Image.Image, to_addrs : list[str], from_addr : str):
+        image_pil = self._resize_image_to_send(image_pil)
+        
         buf = BytesIO()
         image_pil.save(buf, format="JPEG", quality=90)
         img_bytes = buf.getvalue()
@@ -96,12 +112,34 @@ class AlarmController:
             RawMessage={"Data": msg_root.as_string()},
         )
 
-    def send_whatsapp_alarm(self, device_id : str, object_class : str, confidence : float, timestamp : str, image_url : str):
+    def upload_image_to_s3(self, device_id : str, image_pil : Image.Image, frame_timestamp : str):
+        # Turn "YYYY-MM-DD HH:MM:SS UTC" into "YYYY-MM-DDTHH-MM-SSZ"
+        safe_ts = (frame_timestamp.replace(" UTC", "").replace(" ", "T").replace(":", "-") + "Z")
+        file_name = f"{device_id}/{safe_ts}.jpg"
+        
+        buffer = BytesIO()
+        image_pil.save(buffer, format='JPEG')
+        buffer.seek(0)  
+
+        self.s3.upload_fileobj(buffer, self.bucket_name, file_name, ExtraArgs={'ContentType': 'image/jpeg'})
+
+        # Return pre-signed URL
+        return self.s3.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': self.bucket_name, 'Key': file_name},
+            ExpiresIn=3600  # 1 hour
+        )
+
+        
+    def send_whatsapp_alarm(self, device_id : str, object_class : str, confidence : float, alarm_formatted_time : str, image_pil : Image.Image):
+        img = self._resize_image_to_send(image_pil)
+        image_url = self.upload_image_to_s3(device_id, img, alarm_formatted_time)
+
         variables = {
             "1": device_id,
             "2": object_class,
             "3": str(confidence),
-            "4": timestamp,
+            "4": alarm_formatted_time,
             "42": image_url.replace("https://immediate-action-alarm-snapshots.s3.amazonaws.com/", "")
         }
 
@@ -125,22 +163,6 @@ class AlarmController:
 
         return message.sid
 
-    def upload_image_to_s3(self, device_id : str, image_pil : Image.Image, frame_timestamp : str):
-        file_name = f"{device_id}/{frame_timestamp}.jpg"
-        
-        buffer = io.BytesIO()
-        image_pil.save(buffer, format='JPEG')
-        buffer.seek(0)  
-
-        self.s3.upload_fileobj(buffer, self.bucket_name, file_name, ExtraArgs={'ContentType': 'image/jpeg'})
-
-        # Return pre-signed URL
-        return self.s3.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': self.bucket_name, 'Key': file_name},
-            ExpiresIn=3600  # 1 hour
-        )
-    
     def _normalize_plate_text(self, plate_text: str) -> str:
         return plate_text.upper().replace("-", "")
 
@@ -152,16 +174,19 @@ class AlarmController:
         # 2) Object-based rules
         if "object" in rules:
             targets = rules["object"].get("targets", {})  # {label: threshold}
+            target_classes = targets.keys()
             # Choose the highest-confidence valid detection (stable and deterministic)
             best_det = None
             for model_name, out in predictions.items():
                 for det in out.get("detections", []):
                     lbl = det.get("label")
                     conf = float(det.get("confidence", 0.0))
-                    thr = targets.get(lbl)
-                    if thr is not None and conf >= float(thr):
-                        if best_det is None or conf > best_det.get("confidence", 0.0):
-                            best_det = det
+                    
+                    if lbl in target_classes:
+                        thr = targets[lbl].get("min_confidence", None)
+                        if thr is not None and conf >= float(thr):
+                            if best_det is None or conf > best_det.get("confidence", 0.0):
+                                best_det = det
             if best_det is not None:
                 return True, "object_detection", best_det
 
@@ -179,7 +204,6 @@ class AlarmController:
                         ])
                 if model_name == "license_plate_recognition":
                     plates.extend(out.get("detections", []))
-            print("plates found: ", [p["ocr_text"] for p in plates])
             if plates:
                 target_plates = {self._normalize_plate_text(p): v for p, v in rules["plate"].get("targets", {}).items()}
                 for plate in plates:
@@ -220,42 +244,35 @@ class AlarmController:
         if alarm_detected:
             alarm_object_class = alarm_detection["label"] if alarm_detection else "unknown"
             alarm_confidence = alarm_detection["confidence"] if alarm_detection else 0.0
-            
+            alarm_time = frame_timestamp.strftime("%Y-%m-%d %H:%M:%S UTC")
+
             print(f"[INFO] Alarm triggered for device {stream_name} at {frame_timestamp}")
             print(f"\tAlarm type: {alarm_type}")
-            print(f"\tAlarm time: {frame_timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+            print(f"\tAlarm time: {alarm_time}")
             print(f"\tAlarm confidence: {alarm_confidence:.2f}")
             print(f"\tAlarm object class: {alarm_object_class}")
             
             if "email" in alarm_config["channels"]:
-                start = time.time()
-                self.send_email_alarm(
+                _run_on_background(
+                    self.send_email_alarm,
                     device_id=stream_name,
                     object_class=alarm_object_class,
                     confidence=alarm_confidence,
-                    alarm_formatted_time=frame_timestamp.strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    alarm_formatted_time=alarm_time,
                     image_pil=image_pil,
                     to_addrs=alarm_config["channels"]["email"]["recipients"],
-                    from_addr="gustavo.fuhr@immediateaction.io"
+                    from_addr="gustavo.fuhr@immediateaction.io",
                 )
-                if verbose: print(f"[INFO] Sent email alarm in {time.time() - start:.2f} seconds")
-
+                
             if "whatsapp" in alarm_config["channels"]:
-                # for whats app, I need to upload image to S3
-                start = time.time()
-                image_url = self.upload_image_to_s3(stream_name, image_pil, frame_timestamp)
-                if verbose: print(f"[INFO] Uploaded alarm snapshot to S3 in {time.time() - start:.2f} seconds")
-
-                start = time.time()
-                self.send_whatsapp_alarm(
+                _run_on_background(
+                    self.send_whatsapp_alarm,
                     device_id=stream_name,
-                    object_class=alarm_detection["label"],
-                    confidence=alarm_detection["confidence"],
-                    timestamp=frame_timestamp.strftime("%Y-%m-%d %H:%M:%S UTC"),
-                    image_url=image_url
+                    object_class=alarm_object_class,
+                    confidence=alarm_confidence,
+                    alarm_formatted_time=alarm_time,
+                    image_pil=image_pil,
                 )
-                if verbose: print(f"[INFO] Sent WhatsApp alarm in {time.time() - start:.2f} seconds")
-
         
         return alarm_detected
         
