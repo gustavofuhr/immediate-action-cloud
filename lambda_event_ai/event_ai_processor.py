@@ -146,16 +146,17 @@ class EventAIProcessor:
                                                                 self.stream_ai_config.get("per_model_params", None), 
                                                                 verbose=(self.n_frames == 0))
             # draw predictions on the frame for video/alarms
-            image_pil = self._draw_predictions_on_frame(image_pil, self.stream_ai_config["models"], model_predictions["results"])
+            drawn_image_pil = image_pil.copy()
+            drawn_image_pil = self._draw_predictions_on_frame(drawn_image_pil, self.stream_ai_config["models"], model_predictions["results"])
             
             # add the frame to the event clip
-            self.event_clip.add_frame(image_pil)
+            self.event_clip.add_frame(drawn_image_pil)
             self.n_frames += 1
 
             # check if an alarm must be send
             if not self.triggered_alarm:
                 self.triggered_alarm = alarm_controller.check_alarm(self.stream_name, model_predictions["results"], 
-                                                                                        frame_timestamp, image_pil, verbose=(self.n_frames == 0))
+                                                                                        frame_timestamp, image_pil, drawn_image_pil, verbose=(self.n_frames == 0))
 
             # store the predictions in DynamoDB
             self._store_predictions(

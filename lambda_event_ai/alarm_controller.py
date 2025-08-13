@@ -3,6 +3,8 @@ from datetime import datetime
 import json
 from io import BytesIO
 from threading import Thread
+from decimal import Decimal
+import math
 import traceback
 
 from email.mime.multipart import MIMEMultipart
@@ -13,6 +15,7 @@ import boto3
 from PIL import Image
 
 from lambda_config import get_alarm_config
+
 
 
 EMAIL_PLAIN_TEXT = """
@@ -38,6 +41,15 @@ EMAIL_HTML = """
 </html>
 """
 
+WHATSAPP_ORIGINATION_PHONE_NUMBER_ID = "phone-number-id-44b89180ceaa40ba95a2fafe668e7ed9"
+WHATSAPP_TO_E164 = "+5551996039983"  # recipient in E.164 (no 'whatsapp:' prefix)
+WHATSAPP_API_VERSION = "v20.0"      # keep in sync with your account’s supported version
+WHATSAPP_REGION = "eu-west-1"       # use the region where you linked Social messaging
+
+WHATSAPP_TEMPLATE_NAME = "event_alert"  # e.g., your template's system name
+WHATSAPP_TEMPLATE_LANG = "en"                   # match the template's language
+
+
 def _run_on_background(fn, *args, **kwargs):
     def _wrapped():
         try:
@@ -49,6 +61,17 @@ def _run_on_background(fn, *args, **kwargs):
     t.start()
     return t
 
+def convert_floats(obj):
+    if isinstance(obj, list):
+        return [convert_floats(i) for i in obj]
+    elif isinstance(obj, dict):
+        return {k: convert_floats(v) for k, v in obj.items()}
+    elif isinstance(obj, float):
+        if not math.isfinite(obj):
+            return None
+        return Decimal(str(obj))
+    else:
+        return obj
 
 class AlarmController:
 
@@ -57,7 +80,10 @@ class AlarmController:
         self.bucket_name = "immediate-action-alarm-snapshots"
         # self.sns = boto3.client('sns')
         self.ses = boto3.client('ses', region_name='eu-west-1')
-        self.twilio_client = None
+        self.dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
+        self.alarms_table = self.dynamodb.Table("event_alarms")  # PK=device_id, SK=frame_timestamp
+
+        self.social = boto3.client("socialmessaging", region_name=WHATSAPP_REGION)
 
 
     def send_text_email_alarm(self, device_id : str, object_class : str, confidence : float, alarm_formatted_time : str, image_url : str):
@@ -112,56 +138,59 @@ class AlarmController:
             RawMessage={"Data": msg_root.as_string()},
         )
 
-    def upload_image_to_s3(self, device_id : str, image_pil : Image.Image, frame_timestamp : str):
-        # Turn "YYYY-MM-DD HH:MM:SS UTC" into "YYYY-MM-DDTHH-MM-SSZ"
-        safe_ts = (frame_timestamp.replace(" UTC", "").replace(" ", "T").replace(":", "-") + "Z")
-        file_name = f"{device_id}/{safe_ts}.jpg"
         
-        buffer = BytesIO()
-        image_pil.save(buffer, format='JPEG')
-        buffer.seek(0)  
-
-        self.s3.upload_fileobj(buffer, self.bucket_name, file_name, ExtraArgs={'ContentType': 'image/jpeg'})
-
-        # Return pre-signed URL
-        return self.s3.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': self.bucket_name, 'Key': file_name},
-            ExpiresIn=3600  # 1 hour
-        )
-
-        
-    def send_whatsapp_alarm(self, device_id : str, object_class : str, confidence : float, alarm_formatted_time : str, image_pil : Image.Image):
+    def send_whatsapp_alarm(self, device_id: str, object_class: str, confidence: float,
+                        alarm_formatted_time: str, image_pil: Image.Image):
+        # 1) Resize and upload image
         img = self._resize_image_to_send(image_pil)
-        image_url = self.upload_image_to_s3(device_id, img, alarm_formatted_time)
+        s3_key = f"{device_id}/{alarm_formatted_time.replace(' ', 'T')}_whatsapp.jpg"
+        self.upload_image_to_s3(img, s3_key, generate_presigned_url=False)
 
-        variables = {
-            "1": device_id,
-            "2": object_class,
-            "3": str(confidence),
-            "4": alarm_formatted_time,
-            "42": image_url.replace("https://immediate-action-alarm-snapshots.s3.amazonaws.com/", "")
+        # 2) Register media with WhatsApp
+        upload = self.social.post_whatsapp_message_media(
+            originationPhoneNumberId=WHATSAPP_ORIGINATION_PHONE_NUMBER_ID,
+            sourceS3File={"bucketName": self.bucket_name, "key": s3_key},
+        )
+        media_id = upload["mediaId"]
+
+        # 3) Build payload with numbered placeholders
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": WHATSAPP_TO_E164,
+            "type": "template",
+            "template": {
+                "name": WHATSAPP_TEMPLATE_NAME,
+                "language": {"code": WHATSAPP_TEMPLATE_LANG},
+                "components": [
+                    {   # header image
+                        "type": "header",
+                        "parameters": [
+                            {"type": "image", "image": {"id": media_id}}
+                        ],
+                    },
+                    {   # body variables in numeric order
+                        "type": "body",
+                        "parameters": [
+                            {"type": "text", "text": device_id},                 # {{1}}
+                            {"type": "text", "text": object_class},              # {{2}}
+                            {"type": "text", "text": f"{confidence:.2f}"},       # {{3}}
+                            {"type": "text", "text": alarm_formatted_time},      # {{4}}
+                        ],
+                    },
+                ],
+            },
         }
 
-        if self.twilio_client is None:
-            from twilio.rest import Client
-            # TODO: define if is going to use twilio or meta
-            account_sid = ''
-            auth_token = ''
-        
-            self.twilio_client = Client(account_sid, auth_token)
-
-        from_whatsapp = 'whatsapp:+14155238886'
-        to_whatsapp = 'whatsapp:+555196039983'
-
-        message = self.twilio_client.messages.create(
-            from_=from_whatsapp,
-            to=to_whatsapp,
-            content_sid="HX7ebfdb1adfd14320b4bc430c67385077", 
-            content_variables=json.dumps(variables)
+        # 4) Send
+        resp = self.social.send_whatsapp_message(
+            originationPhoneNumberId=WHATSAPP_ORIGINATION_PHONE_NUMBER_ID,
+            message=json.dumps(payload).encode("utf-8"),
+            metaApiVersion=WHATSAPP_API_VERSION,
         )
+        return resp.get("messageId")
 
-        return message.sid
+
+
 
     def _normalize_plate_text(self, plate_text: str) -> str:
         return plate_text.upper().replace("-", "")
@@ -219,8 +248,43 @@ class AlarmController:
             
 
         return False, "", None
+    
+    def upload_image_to_s3(self, image_pil : Image.Image, filename : str, generate_presigned_url : bool = False):
+        buffer = BytesIO()
+        image_pil.save(buffer, format='JPEG')
+        buffer.seek(0)  
 
-    def check_alarm(self, stream_name : str, predictions : dict, frame_timestamp : datetime, image_pil : Image.Image, verbose : bool = False):
+        self.s3.upload_fileobj(buffer, self.bucket_name, filename, ExtraArgs={'ContentType': 'image/jpeg'})
+
+        if not generate_presigned_url:
+            return f"s3://{self.bucket_name}/{filename}"
+        
+
+        return self.s3.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': self.bucket_name, 'Key': filename},
+            ExpiresIn=3600  # 1 hour
+        )
+    
+    def _upload_alarm_images(self, stream_name : str, frame_timestamp : datetime, original_image_pil : Image.Image, drawn_image_pil : Image.Image, verbose : bool = False):
+        """
+        Upload the image snapshots to S3 and return image s3 URLs.
+        """
+        start = time.time()
+        image_filename = f"{stream_name}/{frame_timestamp.isoformat()}_original.jpg"
+        original_image_s3_url = self.upload_image_to_s3(original_image_pil, image_filename)
+        elapsed = (time.time() - start) * 1000
+        if verbose: print(f"[INFO] Uploaded original image to S3 in {elapsed:.2f} ms")
+
+        start = time.time()
+        image_filename = f"{stream_name}/{frame_timestamp.isoformat()}_detections.jpg"
+        drawn_image_s3_url = self.upload_image_to_s3(drawn_image_pil, image_filename)
+        elapsed = (time.time() - start) * 1000
+        if verbose: print(f"[INFO] Uploaded drawn image to S3 in {elapsed:.2f} ms")
+
+        return original_image_s3_url, drawn_image_s3_url
+
+    def check_alarm(self, stream_name : str, predictions : dict, frame_timestamp : datetime, original_image_pil : Image.Image, drawn_image_pil : Image.Image, verbose : bool = False):
         """
         Check if the predictions match the alarm configuration for the device.
         If they do, send an alarm notification.
@@ -230,7 +294,7 @@ class AlarmController:
         alarm_config = get_alarm_config(stream_name)
         if not alarm_config:
             if verbose: print(f"No alarm configuration found for device {stream_name}.")
-            return
+            return False
         elapsed = (time.time() - start) * 1000
         if verbose: print(f"[INFO] Retrieved alarm config in {elapsed:.2f} ms")
 
@@ -253,26 +317,93 @@ class AlarmController:
             print(f"\tAlarm object class: {alarm_object_class}")
             
             if "email" in alarm_config["channels"]:
+                print("[INFO] Sending email alarm notification...")
                 _run_on_background(
                     self.send_email_alarm,
                     device_id=stream_name,
                     object_class=alarm_object_class,
                     confidence=alarm_confidence,
                     alarm_formatted_time=alarm_time,
-                    image_pil=image_pil,
+                    image_pil=drawn_image_pil.copy(),
                     to_addrs=alarm_config["channels"]["email"]["recipients"],
-                    from_addr="gustavo.fuhr@immediateaction.io",
+                    from_addr="notifications@immediateaction.io",
                 )
                 
-            if "whatsapp" in alarm_config["channels"]:
-                _run_on_background(
-                    self.send_whatsapp_alarm,
-                    device_id=stream_name,
-                    object_class=alarm_object_class,
-                    confidence=alarm_confidence,
-                    alarm_formatted_time=alarm_time,
-                    image_pil=image_pil,
-                )
+                if "whatsapp" in alarm_config["channels"]:
+                    _run_on_background(self.send_whatsapp_alarm(
+                        device_id=stream_name,
+                        object_class=alarm_object_class,
+                        confidence=alarm_confidence,
+                        alarm_formatted_time=alarm_time,
+                        image_pil=drawn_image_pil.copy(),
+                    ))
+
+            _run_on_background(
+                self._store_event_alarm,
+                stream_name=stream_name,
+                frame_timestamp=frame_timestamp,
+                alarm_type=alarm_type,
+                original_image_pil=original_image_pil.copy(),
+                drawn_image_pil=drawn_image_pil.copy(),
+                rules=alarm_config.get("rules", {}),
+                channels=alarm_config.get("channels", {}),
+                object_class=alarm_object_class,
+                confidence= alarm_confidence,
+                verbose=verbose,
+            )
         
         return alarm_detected
+    
+    def _store_event_alarm(
+        self, 
+        stream_name: str, 
+        frame_timestamp: datetime, 
+        alarm_type: str, 
+        original_image_pil: Image.Image, 
+        drawn_image_pil: Image.Image,
+        rules : dict,
+        channels: dict,
+        object_class: str = None,
+        confidence: float = None,
+        verbose: bool = False,
+    ):
+        """
+        Uploads images via _upload_alarm_images and stores the activation in DynamoDB.
+        Assumes self.alarms_table points to 'event_alarms' (PK=device_id, SK=frame_timestamp).
+        """
+        s3_url_original, s3_url_drawn = self._upload_alarm_images(
+            stream_name=stream_name,
+            frame_timestamp=frame_timestamp,
+            original_image_pil=original_image_pil,
+            drawn_image_pil=drawn_image_pil,
+            verbose=verbose,
+        )
+
+        frame_ts_iso = frame_timestamp.isoformat().replace("+00:00", "Z")
+
+        item = {
+            "device_id": stream_name,            # PK
+            "frame_timestamp": frame_ts_iso,     # SK (lexicographically sortable)
+            "created_at": datetime.now().isoformat().replace("+00:00", "Z"),
+            "alarm_type": alarm_type,
+            "s3_url_original": s3_url_original,
+            "s3_url_detections": s3_url_drawn,
+            "rules": convert_floats(rules),
+            "channels": convert_floats(channels)
+        }
+        if object_class:
+            item["detection_label"] = object_class
+        if confidence is not None:
+            item["detection_confidence"] = Decimal(confidence)
+
+        self.alarms_table.put_item(Item=item)
+
+        if verbose:
+            print(f"[INFO] Stored alarm in DynamoDB: device={stream_name} ts={frame_ts_iso} type={alarm_type}")
+
+        return {
+            "frame_timestamp": frame_ts_iso,
+            "s3_url_original": s3_url_original,
+            "s3_url_drawn": s3_url_drawn,
+        }
         
