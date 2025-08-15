@@ -96,21 +96,23 @@ class EventAIProcessor:
         self.n_fragments = 0
         self.n_frames = 0
         
-        self.seen_classes = set()
-        self.seen_plates = set()
-
-        self.object_detection_stats = defaultdict(lambda: {
-            "total_confidence": 0.0,
-            "max_confidence": 0.0,
+        self.predictions_summary = {
+            "seen_classes": set(),
+            "seen_plates": set(),
+            "object_detection_stats": defaultdict(lambda: {
+                "n_detections": 0,
+                "total_confidence": 0.0,
+                "max_confidence": 0.0,
+            }),
+            "plate_recognition_stats": defaultdict(lambda: {
+                "n_detections": 0,
+                "total_confidence": 0.0,
+                "max_confidence": 0.0,
+                "total_ocr_confidence": 0.0,
+                "max_ocr_confidence": 0.0
+            }),
             "n_frames": 0
-        })
-        self.plate_recognition_stats = defaultdict(lambda: {
-            "total_confidence": 0.0,
-            "max_confidence": 0.0,
-            "n_frames": 0,
-            "ocr_max_confidence": 0.0,
-            "ocr_total_confidence": 0.0
-        })
+        }
         self.stream.start()
 
     
@@ -151,12 +153,17 @@ class EventAIProcessor:
             
             # add the frame to the event clip
             self.event_clip.add_frame(drawn_image_pil)
-            self.n_frames += 1
+            self.n_frames += 1          
+
+            # update the seen classes and stats (average confidence, max confidence, etc.)
+            self._update_predictions_summary(self.stream_ai_config["models"], model_predictions["results"])
 
             # check if an alarm must be send
             if not self.triggered_alarm:
-                self.triggered_alarm = alarm_controller.check_alarm(self.stream_name, model_predictions["results"], 
-                                                                                        frame_timestamp, image_pil, drawn_image_pil, verbose=(self.n_frames == 0))
+                # TODO: I think we should use seen_classes to actually checking object alarm type 
+                self.triggered_alarm = alarm_controller.check_alarm(self.stream_name, self.predictions_summary, model_predictions["results"], frame_timestamp, 
+                                                                                image_pil, drawn_image_pil, verbose=(self.n_frames == 0))
+
 
             # store the predictions in DynamoDB
             self._store_predictions(
@@ -168,10 +175,6 @@ class EventAIProcessor:
                 fragment_server_timestamp=frag_server_timestamp,
                 predictions=model_predictions
             )
-
-            # update the seen classes and stats (average confidence, max confidence, etc.)
-            self._update_seen_classes_and_stats(self.stream_ai_config["models"], model_predictions["results"])
-
             
 
         self.n_fragments += 1
@@ -218,46 +221,53 @@ class EventAIProcessor:
         except Exception as e:
             print(f"Error storing detections in DynamoDB: {e}")
 
+    def _create_object_detection_from_ppe(self, person_detection, ppe_level, ppe_confidence):
+        """ Create an object detection from a person with PPE detection """
+        return {
+            "label": f"person_ppe_{ppe_level}",
+            "confidence": person_detection["confidence"] * ppe_confidence,
+            "bbox": person_detection["bbox"],
+        }
 
-    def _update_seen_classes_and_stats(self, models, predictions):
+
+    def _update_predictions_summary(self, models, predictions):
+        self.predictions_summary["n_frames"] += 1
         for model in models:
             detections = predictions[model].get("detections", [])
-            self.seen_classes.update([det['label'] for det in detections])
+            self.predictions_summary["seen_classes"].update([det['label'] for det in detections])
             for det in detections:
                 self._update_detection_stats(det)
 
             if model.startswith("object_detection_then"):
                 for det in detections:
                     if "ppe" in det: # also conside the person with PPE a different object
-                        ppe_det = det.copy()
-                        ppe_det['label'] = "person_ppe_" + det["ppe"]["ppe_level"]
-                        ppe_det['confidence'] = det["confidence"] * det["ppe"]["confidence"]
-                        self.seen_classes.add(ppe_det['label'])
+                        ppe_det = self._create_object_detection_from_ppe(det, det["ppe"]["ppe_level"], det["ppe"]["confidence"])
+                        self.predictions_summary["seen_classes"].add(ppe_det['label'])
                         self._update_detection_stats(ppe_det)
                     elif "license_plate" in det and len(det["license_plate"]) > 0:
-                        self.seen_classes.add("car_plate")
+                        self.predictions_summary["seen_classes"].add("car_plate")
                         # if there are multiple plates, we will add them all
                         for plate in det["license_plate"]:
-                            if plate["ocr_text"] not in self.seen_plates:
-                                self.seen_plates.add(plate["ocr_text"])               
+                            if plate["ocr_text"] not in self.predictions_summary["seen_plates"]:
+                                self.predictions_summary["seen_plates"].add(plate["ocr_text"])
                             self._update_plate_stats(plate)
         
 
     def _update_detection_stats(self, det):
         cls, confidence = det['label'], det['confidence']
-        stats = self.object_detection_stats[cls]
+        stats = self.predictions_summary["object_detection_stats"][cls]
         stats["total_confidence"] += confidence
         stats["max_confidence"] = max(stats["max_confidence"], confidence)
-        stats["n_frames"] += 1
+        stats["n_detections"] += 1
 
     def _update_plate_stats(self, plate):
         text = plate['ocr_text']
-        stats = self.plate_recognition_stats[text]
+        stats = self.predictions_summary["plate_recognition_stats"][text]
         stats["total_confidence"] += plate['confidence']
         stats["max_confidence"] = max(stats["max_confidence"], plate['confidence'])
-        stats["n_frames"] += 1
-        stats["ocr_total_confidence"] += plate['ocr_confidence']
-        stats["ocr_max_confidence"] = max(stats["ocr_max_confidence"], plate['ocr_confidence'])
+        stats["n_detections"] += 1
+        stats["total_ocr_confidence"] += plate['ocr_confidence']
+        stats["max_ocr_confidence"] = max(stats["max_ocr_confidence"], plate['ocr_confidence'])
 
 
     def _compute_frame_timestamp(self, fragment_timestamp, n_frames_in_fragment, frame_index, one_in_frames_ratio):
@@ -272,72 +282,81 @@ class EventAIProcessor:
         frame_timestamp = fragment_timestamp + timedelta(seconds=frame_duration * original_frame_index)
         return frame_timestamp
 
-
     def on_stream_read_complete(self, stream):
         print(f'Read Media on stream: {stream} Completed')
         if self.event_clip.frames == []:
             self.stream_exception = StreamNotReadyError("No frames were processed. The stream might not be ready yet.")
             print(self.stream_exception.message)
             self.stream.stop_thread()
-        else:
-            
-            print('Writing event clip to S3')
-            start_time = time.time()
-            self.event_clip.send_clip_to_s3(self.event_clip_filepath)
-            elapsed_ms = (time.time() - start_time) * 1000
-            print(f"send_clip_to_s3 took {elapsed_ms:.2f} ms")
+            return
 
-            # Finalize object_detection_stats (compute average)
-            final_object_detection_stats = {}
-            for cls, stats in self.object_detection_stats.items():
+        print('Writing event clip to S3')
+        start_time = time.time()
+        self.event_clip.send_clip_to_s3(self.event_clip_filepath)
+        elapsed_ms = (time.time() - start_time) * 1000
+        print(f"send_clip_to_s3 took {elapsed_ms:.2f} ms")
+
+        # ---- Build finals from self.predictions_summary ----
+        ps = self.predictions_summary
+
+        # object stats -> averages
+        final_object_detection_stats = {}
+        for cls, stats in ps["object_detection_stats"].items():
+            n = stats["n_detections"]
+            if n > 0:
                 final_object_detection_stats[cls] = {
-                    "avg_confidence": round(stats["total_confidence"] / stats["n_frames"], 4),
+                    "avg_confidence": round(stats["total_confidence"] / n, 4),
                     "max_confidence": round(stats["max_confidence"], 4),
-                    "n_frames": stats["n_frames"]
+                    "n_frames": n  # keep field name as in old payload (represents count base)
                 }
-            final_plate_stats = {}
-            for plate, stats in self.plate_recognition_stats.items():
+
+        # plate stats -> averages + ocr averages
+        final_plate_stats = {}
+        for plate, stats in ps["plate_recognition_stats"].items():
+            n = stats["n_detections"]
+            if n > 0:
                 final_plate_stats[plate] = {
-                    "avg_confidence": round(stats["total_confidence"] / stats["n_frames"], 4),
+                    "avg_confidence": round(stats["total_confidence"] / n, 4),
                     "max_confidence": round(stats["max_confidence"], 4),
-                    "ocr_avg_confidence": round(stats["ocr_total_confidence"] / stats["n_frames"], 4),
-                    "ocr_max_confidence": round(stats["ocr_max_confidence"], 4),
-                    "n_frames": stats["n_frames"]
+                    "ocr_avg_confidence": round(stats["total_ocr_confidence"] / n, 4),
+                    "ocr_max_confidence": round(stats["max_ocr_confidence"], 4),
+                    "n_frames": n  # keep field name as in old payload
                 }
 
-            print("Event summary:")
-            print(f"  Stream name: {self.stream_name}")
-            print(f"  Event timestamp: {self.event_timestamp.isoformat()}")
-            print(f"  Attempt number: {self.attempt_number}")
-            print(f"  Stream start timestamp: {self.stream_start_timestamp.isoformat()}")
-            print(f"  Stream end timestamp: {self.stream_end_timestamp.isoformat()}")
-            print(f"  Number of processed fragments: {self.n_fragments}")
-            print(f"  Number of processed frames: {self.n_frames}")
-            print(f"  Video S3 key: {self.event_clip_filepath}")
-            print(f"  Seen classes: {list(self.seen_classes)}")
-            print(f"  Seen plates: {list(self.seen_plates)}")
-            print(f"  Object detection stats:")
-            for cls, stats in final_object_detection_stats.items():
-                print(f"    - {cls}: avg_conf={stats['avg_confidence']}, max_conf={stats['max_confidence']}, n_frames={stats['n_frames']}")
-            print(f"  Plate detection stats:")
-            for plate, stats in final_plate_stats.items():
-                print(f"    - {plate}: avg_conf={stats['avg_confidence']}, max_conf={stats['max_confidence']}, "
-                      f"ocr_avg_conf={stats['ocr_avg_confidence']}, ocr_max_conf={stats['ocr_max_confidence']}, n_frames={stats['n_frames']}")
+        # ---- Logging summary (unchanged style, but sourced from ps) ----
+        print("Event summary:")
+        print(f"  Stream name: {self.stream_name}")
+        print(f"  Event timestamp: {self.event_timestamp.isoformat()}")
+        print(f"  Attempt number: {self.attempt_number}")
+        print(f"  Stream start timestamp: {self.stream_start_timestamp.isoformat()}")
+        print(f"  Stream end timestamp: {self.stream_end_timestamp.isoformat()}")
+        print(f"  Number of processed fragments: {self.n_fragments}")
+        print(f"  Number of processed frames: {self.n_frames}")
+        print(f"  Video S3 key: {self.event_clip_filepath}")
+        print(f"  Seen classes: {list(ps['seen_classes'])}")
+        print(f"  Seen plates: {list(ps['seen_plates'])}")
+        print(f"  Object detection stats:")
+        for cls, s in final_object_detection_stats.items():
+            print(f"    - {cls}: avg_conf={s['avg_confidence']}, max_conf={s['max_confidence']}, n_frames={s['n_frames']}")
+        print(f"  Plate detection stats:")
+        for plate, s in final_plate_stats.items():
+            print(f"    - {plate}: avg_conf={s['avg_confidence']}, max_conf={s['max_confidence']}, "
+                f"ocr_avg_conf={s['ocr_avg_confidence']}, ocr_max_conf={s['ocr_max_confidence']}, n_frames={s['n_frames']}")
 
-            self._update_event_record(
-                stream_name=self.stream_name,
-                event_timestamp=self.event_timestamp,
-                stream_start_timestamp=self.stream_start_timestamp,
-                stream_end_timestamp=self.stream_end_timestamp,
-                n_processed_fragments=self.n_fragments,
-                n_processed_frames=self.n_frames,
-                video_key=self.event_clip_filepath,
-                seen_classes=list(self.seen_classes),
-                seen_plates=list(self.seen_plates),
-                detection_stats=final_object_detection_stats,
-                plate_recognition_stats=final_plate_stats
-            )
-
+        # ---- Keep DynamoDB payload shape the same; just source values from ps ----
+        self._update_event_record(
+            stream_name=self.stream_name,
+            event_timestamp=self.event_timestamp,
+            stream_start_timestamp=self.stream_start_timestamp,
+            stream_end_timestamp=self.stream_end_timestamp,
+            n_processed_fragments=self.n_fragments,
+            n_processed_frames=self.n_frames,
+            video_key=self.event_clip_filepath,
+            seen_classes=list(ps["seen_classes"]),
+            seen_plates=list(ps["seen_plates"]),
+            detection_stats=final_object_detection_stats,
+            plate_recognition_stats=final_plate_stats
+        )
     def on_stream_read_exception(self, stream_name, error, exc_info=None):
         logger.error(f'Error on stream: {stream_name}', exc_info=exc_info)
 

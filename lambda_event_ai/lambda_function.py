@@ -113,8 +113,14 @@ if __name__ == "__main__":
     #     "timestamp": "2025-07-04T21:22:00.771253Z"
     # }
 
-    event = {
-        "topic": "cameras/B8A44FB3A1F9__front/events/streaming/start",
+    # EVENT FROM FRONT, PEOPLE WITH AND WITHOUT PPE
+    # event = ("B8A44FB3A1F9__front, "2025-06-18T15:38:14.946325+00:00")
+    
+    # CAR PLATE EVENT, plate 162D11338
+    event = ("B8A44FE6D078__booth_entrance", "2025-07-31T17:52:01.943080+00:00")
+
+    dummy_event = {
+        "topic": "cameras/{}/events/streaming/start",
         "streaming_options": {
             "gop_length": 26,
             "frame": "1920x1080",
@@ -123,15 +129,9 @@ if __name__ == "__main__":
         },
         "post_buffer_seconds": 10,
         "pre_buffer_seconds": 10,
-        "timestamp": "2025-06-18T15:38:14.946325Z"
+        "timestamp": "{}"
     }
+    dummy_event["topic"] = f"cameras/{event[0]}/events/streaming/start"
+    dummy_event["timestamp"] = event[1].replace("+00:00", "Z")
 
-
-    # B8A44FB3A1F9__front_event_2025-06-18T15:38:14.946325+00:00_frame_17.png
-    # B8A44FB981BB__panoramic_trains_event_2025-06-26T16:32:17.550213+00:00_frame_19.png
-
-
-
-    
-
-    lambda_handler(event, MockLambdaContext())
+    lambda_handler(dummy_event, MockLambdaContext())

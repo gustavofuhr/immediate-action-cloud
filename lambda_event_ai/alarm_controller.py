@@ -195,7 +195,7 @@ class AlarmController:
     def _normalize_plate_text(self, plate_text: str) -> str:
         return plate_text.upper().replace("-", "")
 
-    def _evaluate_alarm_rules(self, predictions: dict, rules: dict):
+    def _evaluate_alarm_rules(self, predictions_summary: dict, rules: dict):
         # 1) Any motion: fire immediately
         if "any_motion" in rules:
             return True, "any_motion", None
@@ -206,44 +206,37 @@ class AlarmController:
             target_classes = targets.keys()
             # Choose the highest-confidence valid detection (stable and deterministic)
             best_det = None
-            for model_name, out in predictions.items():
-                for det in out.get("detections", []):
-                    lbl = det.get("label")
-                    conf = float(det.get("confidence", 0.0))
-                    
-                    if lbl in target_classes:
-                        thr = targets[lbl].get("min_confidence", None)
-                        if thr is not None and conf >= float(thr):
-                            if best_det is None or conf > best_det.get("confidence", 0.0):
-                                best_det = det
+            for detected_class in predictions_summary.get("seen_classes", []):
+                max_conf = predictions_summary["object_detection_stats"].get(detected_class, {}).get("max_confidence", 0.0)
+                
+                if detected_class in target_classes:
+                    thr = targets[detected_class].get("min_confidence", None)
+                    if thr is not None and max_conf >= float(thr):
+                        if best_det is None or max_conf > best_det.get("confidence", 0.0):
+                            best_det = {
+                                "label": detected_class,
+                                "confidence": max_conf
+                            }
             if best_det is not None:
                 return True, "object_detection", best_det
 
         # 3) Plate rules 
         if "plate" in rules:
-            plates = []
-            for model_name, out in predictions.items():
-                if model_name.startswith("object_detection"):
-                    if "lpr" in model_name:
-                        plates.extend([
-                            plate
-                            for det in out.get("detections", [])
-                            if "license_plate" in det and len(det["license_plate"]) > 0
-                            for plate in det["license_plate"]
-                        ])
-                if model_name == "license_plate_recognition":
-                    plates.extend(out.get("detections", []))
-            if plates:
+            seen_plates = predictions_summary.get("seen_plates", [])
+            if seen_plates:
                 target_plates = {self._normalize_plate_text(p): v for p, v in rules["plate"].get("targets", {}).items()}
-                for plate in plates:
-                    plate_text = self._normalize_plate_text(plate.get("ocr_text", ""))
-                    if plate_text in target_plates and \
-                        float(plate.get("confidence", 0.0)) >= float(target_plates[plate_text]["min_plate_confidence"]) and \
-                        float(plate.get("ocr_confidence", 0.0)) >= float(target_plates[plate_text].get("min_ocr_confidence", 0.0)):
+                for detected_plate in seen_plates:
+                    det_plate_text = self._normalize_plate_text(detected_plate)
+                    plate_confidence = predictions_summary["plate_recognition_stats"].get(det_plate_text, {}).get("max_confidence", 0.0)
+                    ocr_confidence = predictions_summary["plate_recognition_stats"].get(det_plate_text, {}).get("max_ocr_confidence", 0.0)
+
+                    if det_plate_text in target_plates and \
+                        float(plate_confidence) >= float(target_plates[det_plate_text]["min_plate_confidence"]) and \
+                        float(ocr_confidence) >= float(target_plates[det_plate_text].get("min_ocr_confidence", 0.0)):
                         return True, "plate_detection", {
-                            "label": plate_text,
-                            "confidence": float(plate.get("confidence", 0.0)),
-                            "ocr_confidence": float(plate.get("ocr_confidence", 0.0))
+                            "label": det_plate_text,
+                            "confidence": float(plate_confidence),
+                            "ocr_confidence": float(ocr_confidence)
                         }
             
 
@@ -284,9 +277,10 @@ class AlarmController:
 
         return original_image_s3_url, drawn_image_s3_url
 
-    def check_alarm(self, stream_name : str, predictions : dict, frame_timestamp : datetime, original_image_pil : Image.Image, drawn_image_pil : Image.Image, verbose : bool = False):
+    def check_alarm(self, stream_name : str, predictions_summary : dict, frame_predictions : dict, 
+                        frame_timestamp : datetime, original_image_pil : Image.Image, drawn_image_pil : Image.Image, verbose : bool = False):
         """
-        Check if the predictions match the alarm configuration for the device.
+        Check if the predictions_summary match the alarm configuration for the device.
         If they do, send an alarm notification.
         """
 
@@ -300,9 +294,9 @@ class AlarmController:
 
         # Check if any of the predicted classes match the alarm configuration
         start = time.time() 
-        alarm_detected, alarm_type, alarm_detection = self._evaluate_alarm_rules(predictions=predictions, rules=alarm_config.get("rules", {}))
+        alarm_detected, alarm_type, alarm_detection = self._evaluate_alarm_rules(predictions_summary=predictions_summary, rules=alarm_config.get("rules", {}))
         elapsed = (time.time() - start) * 1000
-        # if verbose: print(f"[INFO] Checked predictions for in {elapsed:.2f} ms")
+        # if verbose: print(f"[INFO] Checked predictions_summary for in {elapsed:.2f} ms")
 
         # TODO: sending an alarm can take a while, so we should not block the main thread
         if alarm_detected:
@@ -329,14 +323,15 @@ class AlarmController:
                     from_addr="notifications@immediateaction.io",
                 )
                 
-                if "whatsapp" in alarm_config["channels"]:
-                    _run_on_background(self.send_whatsapp_alarm(
-                        device_id=stream_name,
-                        object_class=alarm_object_class,
-                        confidence=alarm_confidence,
-                        alarm_formatted_time=alarm_time,
-                        image_pil=drawn_image_pil.copy(),
-                    ))
+            if "whatsapp" in alarm_config["channels"]:
+                print("[INFO] Sending whatsapp alarm notification...")
+                _run_on_background(self.send_whatsapp_alarm(
+                    device_id=stream_name,
+                    object_class=alarm_object_class,
+                    confidence=alarm_confidence,
+                    alarm_formatted_time=alarm_time,
+                    image_pil=drawn_image_pil.copy(),
+                ))
 
             _run_on_background(
                 self._store_event_alarm,
@@ -349,6 +344,8 @@ class AlarmController:
                 channels=alarm_config.get("channels", {}),
                 object_class=alarm_object_class,
                 confidence= alarm_confidence,
+                predictions_summary=predictions_summary,
+                frame_predictions=frame_predictions,
                 verbose=verbose,
             )
         
@@ -365,6 +362,8 @@ class AlarmController:
         channels: dict,
         object_class: str = None,
         confidence: float = None,
+        predictions_summary: dict = None,
+        frame_predictions: dict = None,
         verbose: bool = False,
     ):
         """
@@ -381,6 +380,10 @@ class AlarmController:
 
         frame_ts_iso = frame_timestamp.isoformat().replace("+00:00", "Z")
 
+        # dynamodb does not work with empty sets, so we need to convert to lists
+        dynamodb_pred_summary = predictions_summary.copy() if predictions_summary else {}
+        dynamodb_pred_summary["seen_classes"] = list(dynamodb_pred_summary.get("seen_classes", []))
+        dynamodb_pred_summary["seen_plates"] = list(dynamodb_pred_summary.get("seen_plates", []))
         item = {
             "device_id": stream_name,            # PK
             "frame_timestamp": frame_ts_iso,     # SK (lexicographically sortable)
@@ -389,7 +392,9 @@ class AlarmController:
             "s3_url_original": s3_url_original,
             "s3_url_detections": s3_url_drawn,
             "rules": convert_floats(rules),
-            "channels": convert_floats(channels)
+            "channels": convert_floats(channels),
+            "predictions_summary": convert_floats(dynamodb_pred_summary) if dynamodb_pred_summary else None,
+            "frame_predictions": convert_floats(frame_predictions) if frame_predictions else None,
         }
         if object_class:
             item["detection_label"] = object_class
