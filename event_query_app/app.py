@@ -24,7 +24,7 @@ with tab1:
     with col_obj1:
         class_filter = st.multiselect(
             "Select classes (optional):",
-            options=['person', 'car_plate', 'animals', 'dog', 'sheep', 'cow', 'bird', 'vehicles', 'car', 'bicycle', 'motorcycle', 'train', 'truck'], 
+            options=['person', 'car_plate', 'person_w_ppe', 'person_wout_ppe', 'animals', 'dog', 'sheep', 'cow', 'bird', 'vehicles', 'car', 'bicycle', 'motorcycle', 'train', 'truck'], 
             default=["person"]
         )
     with col_obj2:

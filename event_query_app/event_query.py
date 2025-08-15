@@ -134,6 +134,12 @@ class EventQuery:
         if "vehicles" in target_classes:
             target_classes.extend(['car', 'motorcycle', 'bus', 'bicycle', 'train', 'truck', 'boat', 'airplane'])
             target_classes.remove('vehicles')
+        if "person_w_ppe" in target_classes:
+            target_classes.extend(['person_ppe_upper', 'person_ppe_bottom', 'person_ppe_full'])
+            target_classes.remove('person_w_ppe')
+        if "person_wout_ppe" in target_classes:
+            target_classes.append('person_ppe_noppe')
+            target_classes.remove('person_wout_ppe')
 
         if not target_classes:
             filtered_items = items
