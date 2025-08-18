@@ -161,8 +161,8 @@ class EventAIProcessor:
             # check if an alarm must be send
             if not self.triggered_alarm:
                 # TODO: I think we should use seen_classes to actually checking object alarm type 
-                self.triggered_alarm = alarm_controller.check_alarm(self.stream_name, self.predictions_summary, model_predictions["results"], frame_timestamp, 
-                                                                                image_pil, drawn_image_pil, verbose=(self.n_frames == 0))
+                self.triggered_alarm = alarm_controller.check_alarm(self.stream_name, self.predictions_summary, model_predictions["results"], self.stream_start_timestamp,
+                                                                    frame_timestamp, image_pil, drawn_image_pil, verbose=(self.n_frames == 0))
 
 
             # store the predictions in DynamoDB

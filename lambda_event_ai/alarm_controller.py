@@ -3,7 +3,7 @@ from datetime import datetime
 import json
 from io import BytesIO
 from threading import Thread
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 import math
 import traceback
 
@@ -29,25 +29,25 @@ SNS_TOPIC_ARN = "arn:aws:sns:eu-west-1:354918369325:event-alarms"
 EMAIL_HTML = """
 <html>
   <body>
-    <h3>Event Alert: {device_id}</h3>
+    <h4>Event Alert: {device_id}</h4>
     <p>
       <b>Class:</b> {object_class}<br/>
       <b>Confidence:</b> {confidence:.2f}<br/>
-      <b>Time:</b> {alarm_time}
+      <b>Time:</b> {alarm_time}<br/><br/>
+      <i>Event timestamp: {event_timestamp}</i>
     </p>
-    <p>Snapshot:</p>
     <img src="cid:snapshot" alt="snapshot"/>
   </body>
 </html>
 """
 
-WHATSAPP_ORIGINATION_PHONE_NUMBER_ID = "phone-number-id-44b89180ceaa40ba95a2fafe668e7ed9"
-WHATSAPP_TO_E164 = "+5551996039983"  # recipient in E.164 (no 'whatsapp:' prefix)
-WHATSAPP_API_VERSION = "v20.0"      # keep in sync with your account’s supported version
-WHATSAPP_REGION = "eu-west-1"       # use the region where you linked Social messaging
+WHATSAPP_ORIGINATION_PHONE_NUMBER_ID = "phone-number-id-cc7253fceb0947f0be779ea4f0f4fdde"
+# WHATSAPP_TO_E164 = "+5551996039983"  
+WHATSAPP_API_VERSION = "v20.0"
+WHATSAPP_REGION = "eu-west-1"
 
-WHATSAPP_TEMPLATE_NAME = "event_alert"  # e.g., your template's system name
-WHATSAPP_TEMPLATE_LANG = "en"                   # match the template's language
+WHATSAPP_TEMPLATE_NAME = "event_alert" 
+WHATSAPP_TEMPLATE_LANG = "en" 
 
 
 def _run_on_background(fn, *args, **kwargs):
@@ -69,7 +69,8 @@ def convert_floats(obj):
     elif isinstance(obj, float):
         if not math.isfinite(obj):
             return None
-        return Decimal(str(obj))
+        d = Decimal(str(obj))
+        return d.quantize(Decimal("1.000000"), rounding=ROUND_HALF_UP)
     else:
         return obj
 
@@ -104,7 +105,7 @@ class AlarmController:
 
         return image_pil
 
-    def send_email_alarm(self, device_id : str, object_class : str, confidence : float, alarm_formatted_time : str, 
+    def send_email_alarm(self, device_id : str, object_class : str, confidence : float, event_formatted_time : str, alarm_formatted_time : str, 
                                 image_pil : Image.Image, to_addrs : list[str], from_addr : str):
         image_pil = self._resize_image_to_send(image_pil)
         
@@ -124,7 +125,7 @@ class AlarmController:
         alt.attach(MIMEText(text_part, "plain", "utf-8"))
 
         html_part = EMAIL_HTML.format(device_id=device_id, object_class=object_class,
-            confidence=confidence, alarm_time=alarm_formatted_time)
+            confidence=confidence, event_timestamp=event_formatted_time, alarm_time=alarm_formatted_time)
         alt.attach(MIMEText(html_part, "html", "utf-8"))
 
         img = MIMEImage(img_bytes, _subtype="jpeg", name="snapshot.jpg")
@@ -140,7 +141,7 @@ class AlarmController:
 
         
     def send_whatsapp_alarm(self, device_id: str, object_class: str, confidence: float,
-                        alarm_formatted_time: str, image_pil: Image.Image):
+                            alarm_formatted_time: str, event_formatted_time: str, image_pil: Image.Image, to_numbers: list[str]):
         # 1) Resize and upload image
         img = self._resize_image_to_send(image_pil)
         s3_key = f"{device_id}/{alarm_formatted_time.replace(' ', 'T')}_whatsapp.jpg"
@@ -152,44 +153,48 @@ class AlarmController:
             sourceS3File={"bucketName": self.bucket_name, "key": s3_key},
         )
         media_id = upload["mediaId"]
-
-        # 3) Build payload with numbered placeholders
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": WHATSAPP_TO_E164,
-            "type": "template",
-            "template": {
-                "name": WHATSAPP_TEMPLATE_NAME,
-                "language": {"code": WHATSAPP_TEMPLATE_LANG},
-                "components": [
-                    {   # header image
-                        "type": "header",
-                        "parameters": [
-                            {"type": "image", "image": {"id": media_id}}
-                        ],
-                    },
-                    {   # body variables in numeric order
-                        "type": "body",
-                        "parameters": [
-                            {"type": "text", "text": device_id},                 # {{1}}
-                            {"type": "text", "text": object_class},              # {{2}}
-                            {"type": "text", "text": f"{confidence:.2f}"},       # {{3}}
-                            {"type": "text", "text": alarm_formatted_time},      # {{4}}
-                        ],
-                    },
-                ],
-            },
+        template = {
+            "name": WHATSAPP_TEMPLATE_NAME,
+            "language": {"code": WHATSAPP_TEMPLATE_LANG},
+            "components": [
+                {   # header image
+                    "type": "header",
+                    "parameters": [
+                        {"type": "image", "image": {"id": media_id}}
+                    ],
+                },
+                {   # body variables in numeric order
+                    "type": "body",
+                    "parameters": [
+                        {"type": "text", "text": device_id},                 # {{1}}
+                        {"type": "text", "text": object_class},              # {{2}}
+                        {"type": "text", "text": f"{confidence:.2f}"},       # {{3}}
+                        {"type": "text", "text": alarm_formatted_time},      # {{4}}
+                        {"type": "text", "text": event_formatted_time},      # {{5}}
+                    ],
+                },
+            ],
         }
+        results = {}
+        for number in to_numbers:
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": number,
+                "type": "template",
+                "template": template,
+            }
+            print(f"[INFO] Sending WhatsApp to {number}")
+            try:
+                resp = self.social.send_whatsapp_message(
+                    originationPhoneNumberId=WHATSAPP_ORIGINATION_PHONE_NUMBER_ID,
+                    message=json.dumps(payload).encode("utf-8"),
+                    metaApiVersion=WHATSAPP_API_VERSION,
+                )
+                results[number] = resp.get("messageId")
+            except Exception as e:
+                results[number] = str(e)
 
-        # 4) Send
-        resp = self.social.send_whatsapp_message(
-            originationPhoneNumberId=WHATSAPP_ORIGINATION_PHONE_NUMBER_ID,
-            message=json.dumps(payload).encode("utf-8"),
-            metaApiVersion=WHATSAPP_API_VERSION,
-        )
-        return resp.get("messageId")
-
-
+        return results
 
 
     def _normalize_plate_text(self, plate_text: str) -> str:
@@ -259,7 +264,12 @@ class AlarmController:
             ExpiresIn=3600  # 1 hour
         )
     
-    def _upload_alarm_images(self, stream_name : str, frame_timestamp : datetime, original_image_pil : Image.Image, drawn_image_pil : Image.Image, verbose : bool = False):
+    def _upload_alarm_images(self, 
+                            stream_name : str, 
+                            frame_timestamp : datetime, 
+                            original_image_pil : Image.Image, 
+                            drawn_image_pil : Image.Image, 
+                            verbose : bool = False):
         """
         Upload the image snapshots to S3 and return image s3 URLs.
         """
@@ -277,7 +287,7 @@ class AlarmController:
 
         return original_image_s3_url, drawn_image_s3_url
 
-    def check_alarm(self, stream_name : str, predictions_summary : dict, frame_predictions : dict, 
+    def check_alarm(self, stream_name : str, predictions_summary : dict, frame_predictions : dict, event_timestamp : datetime,
                         frame_timestamp : datetime, original_image_pil : Image.Image, drawn_image_pil : Image.Image, verbose : bool = False):
         """
         Check if the predictions_summary match the alarm configuration for the device.
@@ -317,6 +327,7 @@ class AlarmController:
                     device_id=stream_name,
                     object_class=alarm_object_class,
                     confidence=alarm_confidence,
+                    event_formatted_time=event_timestamp.isoformat(),
                     alarm_formatted_time=alarm_time,
                     image_pil=drawn_image_pil.copy(),
                     to_addrs=alarm_config["channels"]["email"]["recipients"],
@@ -325,13 +336,15 @@ class AlarmController:
                 
             if "whatsapp" in alarm_config["channels"]:
                 print("[INFO] Sending whatsapp alarm notification...")
-                _run_on_background(self.send_whatsapp_alarm(
+                _run_on_background(self.send_whatsapp_alarm,
                     device_id=stream_name,
                     object_class=alarm_object_class,
                     confidence=alarm_confidence,
                     alarm_formatted_time=alarm_time,
+                    event_formatted_time=event_timestamp.isoformat(),
                     image_pil=drawn_image_pil.copy(),
-                ))
+                    to_numbers=alarm_config["channels"]["whatsapp"]["numbers"]
+                )
 
             _run_on_background(
                 self._store_event_alarm,
@@ -399,7 +412,7 @@ class AlarmController:
         if object_class:
             item["detection_label"] = object_class
         if confidence is not None:
-            item["detection_confidence"] = Decimal(confidence)
+            item["detection_confidence"] = convert_floats(confidence)
 
         self.alarms_table.put_item(Item=item)
 
