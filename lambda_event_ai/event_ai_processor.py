@@ -3,19 +3,16 @@ from datetime import timedelta, datetime, timezone
 from decimal import Decimal
 from collections import defaultdict
 
-import logging
 import boto3
 from PIL import Image, ImageDraw, ImageFont
 
 from amazon_kinesis_video_consumer_library.kinesis_video_streams_parser import KvsConsumerLibrary
 from amazon_kinesis_video_consumer_library.kinesis_video_fragment_processor import KvsFragementProcessor
-# from dfine_controller_ort import DFINEControllerORT
 from sagemaker_controller import SageMakerController
 from event_clip import EventClip, draw_objects_on_frame, draw_ppes_on_frame, draw_plates_on_frame
 from alarm_controller import AlarmController
+from lambda_logging import base_logger
 
-logger = logging.getLogger(__name__)
-alarm_controller = AlarmController()
 
 class StreamNotReadyError(Exception):
     """ Exception raised when the KVS stream is not ready """
@@ -25,16 +22,18 @@ class StreamNotReadyError(Exception):
 
 class EventAIProcessor:
 
-    def __init__(self, aws_region, stream_ai_config, s3_bucket = "motion-event-snapshots"):
+    def __init__(self, aws_region, stream_ai_config, s3_bucket = "motion-event-snapshots", logger=None):
+        self.logger = logger or base_logger
+
         self.stream_ai_config = stream_ai_config
         self.kvs_fragment_processor = KvsFragementProcessor()
         
         self.session = boto3.Session(region_name=aws_region) 
         self.kvs_client = self.session.client("kinesisvideo")        
         
-        self.sagemaker_inference = SageMakerController(aws_region, "sagemaker-inference-server-endpoint")
-
-        self.event_clip = EventClip(aws_region, s3_bucket)
+        self.sagemaker_inference = SageMakerController(aws_region, "sagemaker-inference-server-endpoint", logger=self.logger)
+        self.alarm_controller = AlarmController(logger=self.logger)
+        self.event_clip = EventClip(aws_region, s3_bucket, logger=self.logger)
 
         self.dynamodb = boto3.resource("dynamodb", region_name=aws_region)
         self.event_table = self.dynamodb.Table("events")
@@ -44,6 +43,7 @@ class EventAIProcessor:
         self.stream_exception = None
 
         self.triggered_alarm = False
+
 
     def process_frames(self, stream_name : str, 
                        event_timestamp : datetime,
@@ -124,18 +124,18 @@ class EventAIProcessor:
         frag_producer_timestamp = datetime.fromtimestamp(float(frag_tags["AWS_KINESISVIDEO_PRODUCER_TIMESTAMP"]), tz=timezone.utc)
         frag_server_timestamp = datetime.fromtimestamp(float(frag_tags["AWS_KINESISVIDEO_SERVER_TIMESTAMP"]), tz=timezone.utc)
 
-        print(f'Fragment arrived: #{frag_number}, with timestamp {frag_producer_timestamp}')
+        self.logger.info(f'Fragment arrived: #{frag_number}, with timestamp {frag_producer_timestamp}')
         if frag_producer_timestamp < self.stream_start_timestamp:
-            print(f'Fragment timestamp {frag_producer_timestamp} is before start timestamp {self.stream_start_timestamp}. Skipping.')
+            self.logger.info(f'Fragment timestamp {frag_producer_timestamp} is before start timestamp {self.stream_start_timestamp}. Skipping.')
             return
         
         if frag_producer_timestamp > self.stream_end_timestamp:
-            print(f'Fragment timestamp {frag_producer_timestamp} is after end timestamp {self.stream_end_timestamp}. Stopping stream.')
+            self.logger.info(f'Fragment timestamp {frag_producer_timestamp} is after end timestamp {self.stream_end_timestamp}. Stopping stream.')
             self.stream.stop_thread()
             return
         
         ndarray_frames, n_frames_in_fragment = self.kvs_fragment_processor.get_frames_as_ndarray(fragment_bytes, self.one_in_frames_ratio)
-        if (self.n_frames == 0): print(f"Will get one in {self.one_in_frames_ratio} frames, total of {len(ndarray_frames)} from fragment with {n_frames_in_fragment} frames")
+        if (self.n_frames == 0): self.logger.info(f"Will get one in {self.one_in_frames_ratio} frames, total of {len(ndarray_frames)} from fragment with {n_frames_in_fragment} frames")
         for i, frame in enumerate(ndarray_frames):
             image_pil = Image.fromarray(frame) # since the frame is read using pyav, it is in RGB format 
             
@@ -161,7 +161,7 @@ class EventAIProcessor:
             # check if an alarm must be send
             if not self.triggered_alarm:
                 # TODO: I think we should use seen_classes to actually checking object alarm type 
-                self.triggered_alarm = alarm_controller.check_alarm(self.stream_name, self.predictions_summary, model_predictions["results"], self.stream_start_timestamp,
+                self.triggered_alarm = self.alarm_controller.check_alarm(self.stream_name, self.predictions_summary, model_predictions["results"], self.stream_start_timestamp,
                                                                     frame_timestamp, image_pil, drawn_image_pil, verbose=(self.n_frames == 0))
 
 
@@ -219,7 +219,7 @@ class EventAIProcessor:
         try:
             self.event_predictions_table.put_item(Item=item)
         except Exception as e:
-            print(f"Error storing detections in DynamoDB: {e}")
+            self.logger.info(f"Error storing detections in DynamoDB: {e}")
 
     def _create_object_detection_from_ppe(self, person_detection, ppe_level, ppe_confidence):
         """ Create an object detection from a person with PPE detection """
@@ -283,18 +283,18 @@ class EventAIProcessor:
         return frame_timestamp
 
     def on_stream_read_complete(self, stream):
-        print(f'Read Media on stream: {stream} Completed')
+        self.logger.info(f'Read Media on stream: {stream} Completed')
         if self.event_clip.frames == []:
             self.stream_exception = StreamNotReadyError("No frames were processed. The stream might not be ready yet.")
-            print(self.stream_exception.message)
+            self.logger.info(self.stream_exception.message)
             self.stream.stop_thread()
             return
 
-        print('Writing event clip to S3')
+        self.logger.info('Writing event clip to S3')
         start_time = time.time()
         self.event_clip.send_clip_to_s3(self.event_clip_filepath)
         elapsed_ms = (time.time() - start_time) * 1000
-        print(f"send_clip_to_s3 took {elapsed_ms:.2f} ms")
+        self.logger.info(f"send_clip_to_s3 took {elapsed_ms:.2f} ms")
 
         # ---- Build finals from self.predictions_summary ----
         ps = self.predictions_summary
@@ -324,23 +324,23 @@ class EventAIProcessor:
                 }
 
         # ---- Logging summary (unchanged style, but sourced from ps) ----
-        print("Event summary:")
-        print(f"  Stream name: {self.stream_name}")
-        print(f"  Event timestamp: {self.event_timestamp.isoformat()}")
-        print(f"  Attempt number: {self.attempt_number}")
-        print(f"  Stream start timestamp: {self.stream_start_timestamp.isoformat()}")
-        print(f"  Stream end timestamp: {self.stream_end_timestamp.isoformat()}")
-        print(f"  Number of processed fragments: {self.n_fragments}")
-        print(f"  Number of processed frames: {self.n_frames}")
-        print(f"  Video S3 key: {self.event_clip_filepath}")
-        print(f"  Seen classes: {list(ps['seen_classes'])}")
-        print(f"  Seen plates: {list(ps['seen_plates'])}")
-        print(f"  Object detection stats:")
+        self.logger.info("Event summary:")
+        self.logger.info(f"  Stream name: {self.stream_name}")
+        self.logger.info(f"  Event timestamp: {self.event_timestamp.isoformat()}")
+        self.logger.info(f"  Attempt number: {self.attempt_number}")
+        self.logger.info(f"  Stream start timestamp: {self.stream_start_timestamp.isoformat()}")
+        self.logger.info(f"  Stream end timestamp: {self.stream_end_timestamp.isoformat()}")
+        self.logger.info(f"  Number of processed fragments: {self.n_fragments}")
+        self.logger.info(f"  Number of processed frames: {self.n_frames}")
+        self.logger.info(f"  Video S3 key: {self.event_clip_filepath}")
+        self.logger.info(f"  Seen classes: {list(ps['seen_classes'])}")
+        self.logger.info(f"  Seen plates: {list(ps['seen_plates'])}")
+        self.logger.info(f"  Object detection stats:")
         for cls, s in final_object_detection_stats.items():
-            print(f"    - {cls}: avg_conf={s['avg_confidence']}, max_conf={s['max_confidence']}, n_frames={s['n_frames']}")
-        print(f"  Plate detection stats:")
+            self.logger.info(f"    - {cls}: avg_conf={s['avg_confidence']}, max_conf={s['max_confidence']}, n_frames={s['n_frames']}")
+        self.logger.info(f"  Plate detection stats:")
         for plate, s in final_plate_stats.items():
-            print(f"    - {plate}: avg_conf={s['avg_confidence']}, max_conf={s['max_confidence']}, "
+            self.logger.info(f"    - {plate}: avg_conf={s['avg_confidence']}, max_conf={s['max_confidence']}, "
                 f"ocr_avg_conf={s['ocr_avg_confidence']}, ocr_max_conf={s['ocr_max_confidence']}, n_frames={s['n_frames']}")
 
         # ---- Keep DynamoDB payload shape the same; just source values from ps ----
@@ -358,7 +358,7 @@ class EventAIProcessor:
             plate_recognition_stats=final_plate_stats
         )
     def on_stream_read_exception(self, stream_name, error, exc_info=None):
-        logger.error(f'Error on stream: {stream_name}', exc_info=exc_info)
+        self.logger.error(f'Error on stream: {stream_name}', exc_info=exc_info)
 
         # if error is `pyav` can not handle the given uri assumes stream is not ready yet and tries again later
         if isinstance(error, OSError) and str(error) == '`pyav` can not handle the given uri.':
@@ -386,7 +386,7 @@ class EventAIProcessor:
         )
         elapsed_ms = (time.time() - start) * 1000
         # this record should be updated at the end of the processing
-        print(f"Created event record for {stream_name} at {event_timestamp}. Took {elapsed_ms:.2f} ms")
+        self.logger.info(f"Created event record for {stream_name} at {event_timestamp}. Took {elapsed_ms:.2f} ms")
 
     def _update_event_record(self, 
                              stream_name, 
@@ -431,7 +431,7 @@ class EventAIProcessor:
             }
         )
         elapsed_ms = (time.time() - start_time) * 1000
-        print(f"event_table.update_item took {elapsed_ms:.2f} ms")
+        self.logger.info(f"event_table.update_item took {elapsed_ms:.2f} ms")
 
     def _convert_floats_to_decimals(self, obj):
             if isinstance(obj, float):

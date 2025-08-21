@@ -6,11 +6,13 @@ from io import BytesIO
 import boto3
 from PIL import Image
 
+from lambda_logging import base_logger
 
 
 class SageMakerController:
 
-    def __init__(self, aws_region, endpoint_name):
+    def __init__(self, aws_region, endpoint_name, logger=None):
+        self.logger = logger or base_logger
         self.sagemaker_runtime = boto3.client('sagemaker-runtime', region_name=aws_region)
         self.endpoint_name = endpoint_name
 
@@ -29,7 +31,7 @@ class SageMakerController:
         elapsed_time = time.time() - start_time
 
         if verbose:
-            print(f"Sagemaker total inference time: {response['total_time_ms']:.2f} ms; Request time: {elapsed_time * 1000:.2f} ms")
+            self.logger.info(f"Sagemaker total inference time: {response['total_time_ms']:.2f} ms; Request time: {elapsed_time * 1000:.2f} ms")
 
         return response
     

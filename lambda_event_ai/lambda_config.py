@@ -5,6 +5,8 @@ import json
 
 import boto3
 
+from lambda_logging import base_logger
+
 dynamodb = boto3.resource("dynamodb", region_name="eu-west-1")
 configs_table = dynamodb.Table("stream_configs")
 
@@ -52,21 +54,25 @@ def convert_decimals(obj):
         return obj
 
 
-def get_ai_config(device_id):
+def get_ai_config(stream_id, logger=None):
+    logger = logger or base_logger
     try:
-        response = configs_table.get_item(Key={"device_id": device_id, "config_type": "ai_config"})
+        # TODO: config should have stream_id instead of device_id
+        response = configs_table.get_item(Key={"device_id": stream_id, "config_type": "ai_config"})
         config = response.get("Item", {}).get("config", DEFAULT_AI_CONFIG)
     except Exception as e:
         config = DEFAULT_AI_CONFIG
 
-    config = convert_decimals(config)  
-    print(json.dumps(config, indent=4))
+    config = convert_decimals(config)
+    logger.debug("AI Config for stream_id: %s", json.dumps(config, indent=4))
     return config
 
 @ttl_cache(seconds=30)
-def get_alarm_config(device_id):
+def get_alarm_config(stream_id, logger=None):
+    logger = logger or base_logger
     try:
-        response = configs_table.get_item(Key={"device_id": device_id, "config_type": "alarm_config"})
+        # TODO: config should have stream_id instead of device_id
+        response = configs_table.get_item(Key={"device_id": stream_id, "config_type": "alarm_config"})
         config = response.get("Item", {}).get("config", {})
     except Exception as e:
         return None

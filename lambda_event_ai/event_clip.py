@@ -170,7 +170,8 @@ class EventClip:
     A class to handle event movie clips for the Event AI application.
     """
 
-    def __init__(self, aws_region : str, bucket_name : str, resize_clip_height : Optional[int] = None):
+    def __init__(self, aws_region : str, bucket_name : str, resize_clip_height : Optional[int] = None, logger=None):
+        self.logger = logger or base_logger
         self.frames = []
         self.fps = 2
         self.bucket_name = bucket_name
@@ -190,10 +191,10 @@ class EventClip:
 
     def send_clip_to_s3(self, file_path : str):
         if len(self.frames) == 0:
-            print("WARNING! No frames to save in S3, skipping.")
+            self.logger.warning("No frames to save in S3, skipping.")
             return
-        
-        print("Saving event clip locally. Total frames: ", len(self.frames))
+
+        self.logger.info("Saving event clip locally. Total frames: %d", len(self.frames))
 
         clip_local_path = os.path.join("/tmp/", os.path.basename(file_path))
         iio.imwrite(
@@ -203,7 +204,7 @@ class EventClip:
             codec="libx264",
         )
 
-        print("Sending clip to S3: ", file_path)
+        self.logger.info("Sending clip to S3: %s", file_path)
         with open(clip_local_path, "rb") as f:
             self.s3_client.upload_fileobj(
                 Fileobj=f, 

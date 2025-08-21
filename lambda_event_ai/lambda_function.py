@@ -3,25 +3,30 @@ from datetime import datetime
 import time
 
 from lambda_config import get_ai_config
+from lambda_logging import base_logger, CtxAdapter
 from event_ai_processor import EventAIProcessor, StreamNotReadyError
 
+def return_ok_response(logger=None):
+    logger = logger or base_logger
+    d = {
+        "statusCode": 200,
+        "body": "Event processed successfully",
+    }
+    # put statusCode/body as structured fields
+    logger.info("Response", extra=d)
+    return d
 
 
-def return_ok_response():
+def return_error_response(error_message, logger=None):
+    logger = logger or base_logger
     d = {
-        'statusCode': 200,
-        'body': "Event processed successfully"
+        "statusCode": 500,
+        "body": json.dumps(f"Error processing stream: {error_message}"),
     }
-    print(f"Response: {d}")
+    # put statusCode/body as structured fields
+    logger.error("Response", extra=d)
     return d
-        
-def return_error_response(error_message):
-    d = {
-        'statusCode': 500,
-        'body': json.dumps(f'Error processing stream: {error_message}')
-    }
-    print(f"Response: {d}")
-    return d
+
 
 def lambda_handler(event, context):
     """
@@ -35,13 +40,27 @@ def lambda_handler(event, context):
         "profile": "Camera1Profile1",
         "active": True
     }
-    """        
+    """
+
     print("-------------- Lambda Event AI Processor --------------")
     print(json.dumps(event, indent=4))
     topic = event["topic"]
-    stream_name = topic.split("/")[1]
-    start_timestamp = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
-    event_ai_processor = EventAIProcessor(aws_region="eu-west-1", stream_ai_config=get_ai_config(stream_name))
+    
+    # what defines an event is the stream_id and the event_timestamp
+    stream_id = topic.split("/")[1]
+    device_id = stream_id # TODO, device_id should be a parameter in the event payload
+    event_timestamp = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
+    
+    logger = CtxAdapter(
+        base_logger,
+        {
+            "stream_id": stream_id,
+            "event_timestamp": event_timestamp.isoformat(),
+            "device_id": device_id,
+        },
+    )
+
+    event_ai_processor = EventAIProcessor(aws_region="eu-west-1", stream_ai_config=get_ai_config(stream_id=stream_id), logger=logger)
 
     lambda_context = {
         "lambda_function_invoked_arn": context.invoked_function_arn,
@@ -54,24 +73,25 @@ def lambda_handler(event, context):
     base_delay = 1
 
     for attempt in range(max_retries):
-        print(f"\nAttempt #{attempt + 1} to process event '{stream_name}'")
+        logger.info(f"Attempt #{attempt + 1} to process event '{stream_id}' at {event_timestamp.isoformat()}")
         start_time = time.time()
-        event_ai_processor.process_frames(stream_name, start_timestamp, lambda_context, attempt+1, one_in_frames_ratio=7, n_seconds=10)
+        event_start_timestamp = event_timestamp
+        event_ai_processor.process_frames(stream_id, event_start_timestamp, lambda_context, attempt+1, one_in_frames_ratio=7, n_seconds=10)
         event_ai_processor.stream.join(timeout=300)
         elapsed_time = time.time() - start_time
-        print(f"Elapsed time for processing event '{stream_name}': {elapsed_time:.2f} seconds")
+        logger.info(f"Elapsed time for processing event '{stream_id}': {elapsed_time:.2f} seconds")
 
         if event_ai_processor.stream_exception:
             if isinstance(event_ai_processor.stream_exception, StreamNotReadyError):
                 if attempt < max_retries - 1:
                     backoff_time = base_delay * (2 ** attempt)
-                    print(f"Stream not ready. Retrying in {backoff_time:.1f}s...")
+                    logger.warning(f"Stream not ready. Retrying in {backoff_time:.1f}s...")
                     time.sleep(backoff_time)
                 else:
-                    print(f"Processing failed after {max_retries} attempts.")
+                    logger.error(f"Processing failed after {max_retries} attempts.")
                     return return_error_response(str(event_ai_processor.stream_exception))
             else:
-                print(f"Unexpected stream error: {event_ai_processor.stream_exception}")
+                logger.error(f"Unexpected stream error: {event_ai_processor.stream_exception}")
                 return return_error_response(f"Unexpected error: {event_ai_processor.stream_exception}")
         else:
             break

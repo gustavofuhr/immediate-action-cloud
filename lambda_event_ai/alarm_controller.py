@@ -15,6 +15,7 @@ import boto3
 from PIL import Image
 
 from lambda_config import get_alarm_config
+from lambda_logging import base_logger
 
 
 
@@ -76,7 +77,8 @@ def convert_floats(obj):
 
 class AlarmController:
 
-    def __init__(self):
+    def __init__(self, logger=None):
+        self.logger = logger or base_logger
         self.s3 = boto3.client('s3')
         self.bucket_name = "immediate-action-alarm-snapshots"
         # self.sns = boto3.client('sns')
@@ -183,7 +185,7 @@ class AlarmController:
                 "type": "template",
                 "template": template,
             }
-            print(f"[INFO] Sending WhatsApp to {number}")
+            self.logger.info(f"Sending WhatsApp to {number}")
             try:
                 resp = self.social.send_whatsapp_message(
                     originationPhoneNumberId=WHATSAPP_ORIGINATION_PHONE_NUMBER_ID,
@@ -277,13 +279,13 @@ class AlarmController:
         image_filename = f"{stream_name}/{frame_timestamp.isoformat()}_original.jpg"
         original_image_s3_url = self.upload_image_to_s3(original_image_pil, image_filename)
         elapsed = (time.time() - start) * 1000
-        if verbose: print(f"[INFO] Uploaded original image to S3 in {elapsed:.2f} ms")
+        if verbose: self.logger.info(f"Uploaded original image to S3 in {elapsed:.2f} ms")
 
         start = time.time()
         image_filename = f"{stream_name}/{frame_timestamp.isoformat()}_detections.jpg"
         drawn_image_s3_url = self.upload_image_to_s3(drawn_image_pil, image_filename)
         elapsed = (time.time() - start) * 1000
-        if verbose: print(f"[INFO] Uploaded drawn image to S3 in {elapsed:.2f} ms")
+        if verbose: self.logger.info(f"Uploaded drawn image to S3 in {elapsed:.2f} ms")
 
         return original_image_s3_url, drawn_image_s3_url
 
@@ -297,16 +299,16 @@ class AlarmController:
         start = time.time()
         alarm_config = get_alarm_config(stream_name)
         if not alarm_config:
-            if verbose: print(f"No alarm configuration found for device {stream_name}.")
+            if verbose: self.logger.info(f"No alarm configuration found for device {stream_name}.")
             return False
         elapsed = (time.time() - start) * 1000
-        if verbose: print(f"[INFO] Retrieved alarm config in {elapsed:.2f} ms")
+        if verbose: self.logger.info(f"Retrieved alarm config in {elapsed:.2f} ms")
 
         # Check if any of the predicted classes match the alarm configuration
         start = time.time() 
         alarm_detected, alarm_type, alarm_detection = self._evaluate_alarm_rules(predictions_summary=predictions_summary, rules=alarm_config.get("rules", {}))
         elapsed = (time.time() - start) * 1000
-        # if verbose: print(f"[INFO] Checked predictions_summary for in {elapsed:.2f} ms")
+        # if verbose: self.logger.info(f"Checked predictions_summary for in {elapsed:.2f} ms")
 
         # TODO: sending an alarm can take a while, so we should not block the main thread
         if alarm_detected:
@@ -314,14 +316,14 @@ class AlarmController:
             alarm_confidence = alarm_detection["confidence"] if alarm_detection else 0.0
             alarm_time = frame_timestamp.strftime("%Y-%m-%d %H:%M:%S UTC")
 
-            print(f"[INFO] Alarm triggered for device {stream_name} at {frame_timestamp}")
-            print(f"\tAlarm type: {alarm_type}")
-            print(f"\tAlarm time: {alarm_time}")
-            print(f"\tAlarm confidence: {alarm_confidence:.2f}")
-            print(f"\tAlarm object class: {alarm_object_class}")
-            
+            self.logger.info(f"Alarm triggered for device {stream_name} at {frame_timestamp}")
+            self.logger.info(f"Alarm type: {alarm_type}")
+            self.logger.info(f"Alarm time: {alarm_time}")
+            self.logger.info(f"Alarm confidence: {alarm_confidence:.2f}")
+            self.logger.info(f"Alarm object class: {alarm_object_class}")
+
             if "email" in alarm_config["channels"]:
-                print("[INFO] Sending email alarm notification...")
+                self.logger.info("Sending email alarm notification...")
                 _run_on_background(
                     self.send_email_alarm,
                     device_id=stream_name,
@@ -335,7 +337,7 @@ class AlarmController:
                 )
                 
             if "whatsapp" in alarm_config["channels"]:
-                print("[INFO] Sending whatsapp alarm notification...")
+                self.logger.info("Sending whatsapp alarm notification...")
                 _run_on_background(self.send_whatsapp_alarm,
                     device_id=stream_name,
                     object_class=alarm_object_class,
@@ -417,7 +419,7 @@ class AlarmController:
         self.alarms_table.put_item(Item=item)
 
         if verbose:
-            print(f"[INFO] Stored alarm in DynamoDB: device={stream_name} ts={frame_ts_iso} type={alarm_type}")
+            self.logger.info(f"Stored alarm in DynamoDB: device={stream_name} ts={frame_ts_iso} type={alarm_type}")
 
         return {
             "frame_timestamp": frame_ts_iso,
