@@ -35,7 +35,7 @@ class ObjectDetectionController(ModelController):
             d['label'] = COCO_CLASSES[d['label']]
 
         filtered_detections = self.filter_results(detections, params)
-        return self._filter_duplicates(filtered_detections)
+        return self._filter_duplicates(filtered_detections, filter_all_classes=True)
     
     def get_default_parameters(self) -> dict:
         return {
@@ -46,18 +46,25 @@ class ObjectDetectionController(ModelController):
     def filter_results(self, results: list[dict], params: dict) -> list[dict]:
         return [r for r in results if r['confidence'] >= params["threshold"]] # classes are already filtered in run()
 
-    def _filter_duplicates(self, detections: list[dict], iou_threshold: float = 0.99, filter_classes: set[str] = {"car", "truck", "bus"}) -> list[dict]:
+    def _filter_duplicates(
+        self,
+        detections: list[dict],
+        iou_threshold: float = 0.99,
+        filter_classes: set[str] = {"car", "truck", "bus"},
+        filter_all_classes: bool = False
+    ) -> list[dict]:
         detections = sorted(detections, key=lambda d: d["confidence"], reverse=True)
 
         kept = []
-        for i, det in enumerate(detections):
-            if det["label"] not in filter_classes:
+        for det in detections:
+            label = det["label"]
+            if not filter_all_classes and label not in filter_classes:
                 kept.append(det)
                 continue
 
             overlap = False
             for k in kept:
-                if k["label"] in filter_classes and self._iou(det["bbox"], k["bbox"]) > iou_threshold:
+                if (filter_all_classes or k["label"] in filter_classes) and self._iou(det["bbox"], k["bbox"]) > iou_threshold:
                     overlap = True
                     break
 

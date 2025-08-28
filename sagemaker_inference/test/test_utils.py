@@ -79,7 +79,7 @@ def draw_results_by_model(image_path_or_url, response: dict):
             frame = draw_boxes_on_frame(
                 frame,
                 detections,
-                label_fn=lambda d: f"{d['ocr_text']} | {d['score']:.1f} | OCR: {d['ocr_confidence']:.1f}",
+                label_fn=lambda d: f"{d['ocr_text']} | {d['confidence']:.1f} | OCR: {d['ocr_confidence']:.1f}",
                 color_fn=lambda d: DETECTION_CLASS_COLORS.get("plate", "blue"),
                 font_size=18,
                 label_position="bottom"
@@ -89,7 +89,7 @@ def draw_results_by_model(image_path_or_url, response: dict):
             frame = draw_boxes_on_frame(
                 frame,
                 detections,
-                label_fn=lambda d: f"{d['label']}: {d.get('score', 0):.2f}",
+                label_fn=lambda d: f"{d['label']}: {d.get('confidence', 0):.2f}",
                 color_fn=lambda d: DETECTION_CLASS_COLORS.get(d['label'], "red"),
                 font_size=18
             )
@@ -100,7 +100,7 @@ def draw_results_by_model(image_path_or_url, response: dict):
                     frame = draw_boxes_on_frame(
                         frame,
                         det['license_plate'],
-                        label_fn=lambda d: f"{d['ocr_text']} | {d['score']:.1f} | OCR: {d['ocr_confidence']:.1f}",
+                        label_fn=lambda d: f"{d['ocr_text']} | {d['confidence']:.1f} | OCR: {d['ocr_confidence']:.1f}",
                         color_fn=lambda d: DETECTION_CLASS_COLORS.get("plate", "blue"),
                         font_size=18,
                         label_position="bottom"
