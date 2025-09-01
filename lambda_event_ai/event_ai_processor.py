@@ -160,9 +160,8 @@ class EventAIProcessor:
 
             # check if an alarm must be send
             if not self.triggered_alarm:
-                # TODO: I think we should use seen_classes to actually checking object alarm type 
                 self.triggered_alarm = self.alarm_controller.check_alarm(self.stream_name, self.predictions_summary, model_predictions["results"], self.stream_start_timestamp,
-                                                                    frame_timestamp, image_pil, drawn_image_pil, verbose=(self.n_frames == 0))
+                                                                    frame_timestamp, image_pil, drawn_image_pil, verbose=True)
 
 
             # store the predictions in DynamoDB
@@ -256,19 +255,21 @@ class EventAIProcessor:
     def _update_detection_stats(self, det):
         cls, confidence = det['label'], det['confidence']
         stats = self.predictions_summary["object_detection_stats"][cls]
+        stats["n_detections"] += 1
         stats["total_confidence"] += confidence
         stats["max_confidence"] = max(stats["max_confidence"], confidence)
-        stats["n_detections"] += 1
+        stats["avg_confidence"] = stats["total_confidence"] / stats["n_detections"]
 
     def _update_plate_stats(self, plate):
         text = plate['ocr_text']
         stats = self.predictions_summary["plate_recognition_stats"][text]
+        stats["n_detections"] += 1
         stats["total_confidence"] += plate['confidence']
         stats["max_confidence"] = max(stats["max_confidence"], plate['confidence'])
-        stats["n_detections"] += 1
+        stats["avg_confidence"] = stats["total_confidence"] / stats["n_detections"]
         stats["total_ocr_confidence"] += plate['ocr_confidence']
         stats["max_ocr_confidence"] = max(stats["max_ocr_confidence"], plate['ocr_confidence'])
-
+        stats["avg_ocr_confidence"] = stats["total_ocr_confidence"] / stats["n_detections"]
 
     def _compute_frame_timestamp(self, fragment_timestamp, n_frames_in_fragment, frame_index, one_in_frames_ratio):
         if self.last_fragment_timestamp is None:
@@ -299,30 +300,26 @@ class EventAIProcessor:
         # ---- Build finals from self.predictions_summary ----
         ps = self.predictions_summary
 
-        # object stats -> averages
+        # object stats -> drop running totals, keep avg/max/n_detections
         final_object_detection_stats = {}
-        for cls, stats in ps["object_detection_stats"].items():
-            n = stats["n_detections"]
-            if n > 0:
-                final_object_detection_stats[cls] = {
-                    "avg_confidence": round(stats["total_confidence"] / n, 4),
-                    "max_confidence": round(stats["max_confidence"], 4),
-                    "n_frames": n  # keep field name as in old payload (represents count base)
-                }
+        for cls, s in ps["object_detection_stats"].items():
+            final_object_detection_stats[cls] = {
+                "n_detections": s["n_detections"],
+                "avg_confidence": s.get("avg_confidence", 0.0),
+                "max_confidence": s.get("max_confidence", 0.0),
+            }
 
-        # plate stats -> averages + ocr averages
+        # plate stats -> drop running totals, keep avg/max + OCR avg/max + n_detections
         final_plate_stats = {}
-        for plate, stats in ps["plate_recognition_stats"].items():
-            n = stats["n_detections"]
-            if n > 0:
-                final_plate_stats[plate] = {
-                    "avg_confidence": round(stats["total_confidence"] / n, 4),
-                    "max_confidence": round(stats["max_confidence"], 4),
-                    "ocr_avg_confidence": round(stats["total_ocr_confidence"] / n, 4),
-                    "ocr_max_confidence": round(stats["max_ocr_confidence"], 4),
-                    "n_frames": n  # keep field name as in old payload
-                }
-
+        for plate_text, s in ps["plate_recognition_stats"].items():
+            final_plate_stats[plate_text] = {
+                "n_detections": s["n_detections"],
+                "avg_confidence": s.get("avg_confidence", 0.0),
+                "max_confidence": s.get("max_confidence", 0.0),
+                "avg_ocr_confidence": s.get("avg_ocr_confidence", 0.0),
+                "max_ocr_confidence": s.get("max_ocr_confidence", 0.0),
+            }
+        
         # ---- Logging summary (unchanged style, but sourced from ps) ----
         self.logger.info("Event summary:")
         self.logger.info(f"  Stream name: {self.stream_name}")

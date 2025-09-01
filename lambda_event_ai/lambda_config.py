@@ -72,7 +72,7 @@ def get_alarm_config(stream_id, logger=None):
     logger = logger or base_logger
     try:
         # TODO: config should have stream_id instead of device_id
-        response = configs_table.get_item(Key={"device_id": stream_id, "config_type": "alarm_config"})
+        response = configs_table.get_item(Key={"device_id": stream_id, "config_type": "alarm_config_v2"})
         config = response.get("Item", {}).get("config", {})
     except Exception as e:
         return None
