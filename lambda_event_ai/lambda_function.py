@@ -137,7 +137,11 @@ if __name__ == "__main__":
     # event = ("B8A44FB3A1F9__front, "2025-06-18T15:38:14.946325+00:00")
     
     # CAR PLATE EVENT, plate 162D11338
-    event = ("B8A44FE6D078__booth_entrance", "2025-07-31T17:52:01.943080+00:00")
+    # event = ("B8A44FE6D078__booth_entrance", "2025-07-31T17:52:01.943080+00:00")
+
+    # PERSON WALKING A DOG
+    event = ("B8A44FE6D078__booth_entrance", "2025-09-02T16:30:41.028499+00:00")
+
     # event = ("B8A44FB3A1F9__front", "2025-08-17T16:13:59.897905+00:00")
 
     dummy_event = {

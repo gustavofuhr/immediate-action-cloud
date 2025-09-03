@@ -42,7 +42,7 @@ class EventAIProcessor:
         self.last_fragment_timestamp = None
         self.stream_exception = None
 
-        self.triggered_alarm = False
+        self.triggered_alarm_rules = []
 
 
     def process_frames(self, stream_name : str, 
@@ -159,9 +159,8 @@ class EventAIProcessor:
             self._update_predictions_summary(self.stream_ai_config["models"], model_predictions["results"])
 
             # check if an alarm must be send
-            if not self.triggered_alarm:
-                self.triggered_alarm = self.alarm_controller.check_alarm(self.stream_name, self.predictions_summary, model_predictions["results"], self.stream_start_timestamp,
-                                                                    frame_timestamp, image_pil, drawn_image_pil, verbose=True)
+            self.triggered_alarm_rules.extend(self.alarm_controller.check_alarms(self.stream_name, self.predictions_summary, model_predictions["results"], self.stream_start_timestamp,
+                                                                    frame_timestamp, image_pil, drawn_image_pil, exclude_rules=self.triggered_alarm_rules, verbose=False))
 
 
             # store the predictions in DynamoDB
@@ -334,11 +333,11 @@ class EventAIProcessor:
         self.logger.info(f"  Seen plates: {list(ps['seen_plates'])}")
         self.logger.info(f"  Object detection stats:")
         for cls, s in final_object_detection_stats.items():
-            self.logger.info(f"    - {cls}: avg_conf={s['avg_confidence']}, max_conf={s['max_confidence']}, n_frames={s['n_frames']}")
+            self.logger.info(f"    - {cls}: avg_conf={s['avg_confidence']}, max_conf={s['max_confidence']}, n_detections={s['n_detections']}")
         self.logger.info(f"  Plate detection stats:")
         for plate, s in final_plate_stats.items():
             self.logger.info(f"    - {plate}: avg_conf={s['avg_confidence']}, max_conf={s['max_confidence']}, "
-                f"ocr_avg_conf={s['ocr_avg_confidence']}, ocr_max_conf={s['ocr_max_confidence']}, n_frames={s['n_frames']}")
+                f"ocr_avg_conf={s['ocr_avg_confidence']}, ocr_max_conf={s['ocr_max_confidence']}, n_detections={s['n_detections']}")
 
         # ---- Keep DynamoDB payload shape the same; just source values from ps ----
         self._update_event_record(

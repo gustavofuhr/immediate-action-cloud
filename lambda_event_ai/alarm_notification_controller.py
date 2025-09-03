@@ -27,6 +27,9 @@ EMAIL_HTML = """
 </html>
 """
 
+WHATSAPP_ORIGINATION_PHONE_NUMBER_ID = "phone-number-id-cc7253fceb0947f0be779ea4f0f4fdde"
+
+
 class AlarmNotificationController:
     """
     Handles all outbound notifications (SES email and WhatsApp via AWS Social Messaging),
@@ -40,7 +43,6 @@ class AlarmNotificationController:
         ses_region: str = "eu-west-1",
         whatsapp_region: str = "eu-west-1",
         whatsapp_api_version: str = "v20.0",
-        whatsapp_origination_phone_number_id: Optional[str] = None,
         whatsapp_template_name: str = "event_alert",
         whatsapp_template_lang: str = "en",
         s3_client=None,
@@ -56,7 +58,7 @@ class AlarmNotificationController:
         self.social = social_client or boto3.client("socialmessaging", region_name=whatsapp_region)
 
         self.whatsapp_api_version = whatsapp_api_version
-        self.whatsapp_origination_phone_number_id = whatsapp_origination_phone_number_id
+        self.whatsapp_origination_phone_number_id = WHATSAPP_ORIGINATION_PHONE_NUMBER_ID
         self.whatsapp_template_name = whatsapp_template_name
         self.whatsapp_template_lang = whatsapp_template_lang
 
